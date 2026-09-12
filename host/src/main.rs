@@ -578,26 +578,63 @@ fn battery_power_watts() -> f32 {
     (volts * milliamps.abs() / 1000.0) as f32
 }
 
+// Session files outlive a single day, so records carry their own time and the
+// day boundary has to be applied per record rather than per file.
+fn record_time(value: &Value) -> Option<DateTime<Utc>> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+        .map(|time| time.with_timezone(&Utc))
+}
+
+fn is_today(value: &Value, cutoff: DateTime<Utc>) -> bool {
+    // A record with no usable timestamp is counted, since dropping it would
+    // silently lose usage rather than merely dating it wrongly.
+    record_time(value).map_or(true, |time| time >= cutoff)
+}
+
+fn start_of_today() -> DateTime<Utc> {
+    Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| naive.and_local_timezone(Local).earliest())
+        .map(|time| time.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now)
+}
+
 fn codex_usage(active: bool) -> AgentUsage {
     let root = home().join(".codex/sessions");
+    let cutoff = start_of_today();
     let mut tokens = 0u64;
     let mut sessions = 0u8;
     let mut context = 0u8;
     let mut five_hour = "5H --".to_string();
     let mut weekly = "7D --".to_string();
-    for path in recent_jsonl(&root) {
-        sessions = sessions.saturating_add(1);
-        let mut last_total = 0;
+    for path in recent_jsonl(&root, cutoff) {
+        // total_token_usage is cumulative for the whole session, so today's
+        // share is the growth since the last record written before midnight.
+        let mut carried = 0u64;
+        let mut last_total = 0u64;
+        let mut active_today = false;
         for value in json_lines(&path) {
             if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
                 continue;
             }
+            let today = is_today(&value, cutoff);
             if let Some(total) = value
                 .pointer("/payload/info/total_token_usage/total_tokens")
                 .and_then(Value::as_u64)
             {
                 last_total = total;
+                if !today {
+                    carried = total;
+                }
             }
+            if !today {
+                continue;
+            }
+            active_today = true;
             let used = value
                 .pointer("/payload/info/last_token_usage/total_tokens")
                 .and_then(Value::as_u64);
@@ -620,7 +657,10 @@ fn codex_usage(active: bool) -> AgentUsage {
                 weekly = format!("7D {:.0}%", percent);
             }
         }
-        tokens = tokens.saturating_add(last_total);
+        if active_today {
+            sessions = sessions.saturating_add(1);
+            tokens = tokens.saturating_add(last_total.saturating_sub(carried));
+        }
     }
     AgentUsage {
         active,
@@ -635,16 +675,21 @@ fn codex_usage(active: bool) -> AgentUsage {
 
 fn claude_usage(active: bool) -> AgentUsage {
     let root = home().join(".claude/projects");
+    let cutoff = start_of_today();
     let mut tokens = 0u64;
     let mut sessions = 0u8;
     let mut last_context = 0u64;
-    for path in recent_jsonl(&root) {
-        sessions = sessions.saturating_add(1);
+    for path in recent_jsonl(&root, cutoff) {
+        let mut active_today = false;
         for value in json_lines(&path) {
             let usage = match value.pointer("/message/usage") {
                 Some(v) => v,
                 None => continue,
             };
+            if !is_today(&value, cutoff) {
+                continue;
+            }
+            active_today = true;
             let input = usage
                 .get("input_tokens")
                 .and_then(Value::as_u64)
@@ -663,6 +708,9 @@ fn claude_usage(active: bool) -> AgentUsage {
                 .unwrap_or(0);
             tokens = tokens.saturating_add(input + output + cached + created);
             last_context = input + cached + created;
+        }
+        if active_today {
+            sessions = sessions.saturating_add(1);
         }
     }
     let (five_hour, weekly) = claude_ccusage_windows();
@@ -755,8 +803,9 @@ fn any_process(processes: &[ProcessUsage], needles: &[&str]) -> bool {
     })
 }
 
-fn recent_jsonl(root: &Path) -> Vec<PathBuf> {
-    let cutoff = SystemTime::now() - Duration::from_secs(24 * 60 * 60);
+// A file last written before the cutoff cannot hold a record after it.
+fn recent_jsonl(root: &Path, cutoff: DateTime<Utc>) -> Vec<PathBuf> {
+    let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(cutoff.timestamp().max(0) as u64);
     let mut paths: Vec<_> = WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
@@ -901,6 +950,19 @@ mod tests {
     #[test]
     fn ascii_removes_unsupported_glyphs_and_limits_length() {
         assert_eq!(ascii("AI — café news", 9), "AI caf ne");
+    }
+
+    #[test]
+    fn records_outside_today_are_excluded() {
+        let cutoff = DateTime::parse_from_rfc3339("2026-09-12T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let yesterday = serde_json::json!({"timestamp": "2026-09-11T23:59:00Z"});
+        let today = serde_json::json!({"timestamp": "2026-09-12T08:00:00Z"});
+        let undated = serde_json::json!({"message": {}});
+        assert!(!is_today(&yesterday, cutoff));
+        assert!(is_today(&today, cutoff));
+        assert!(is_today(&undated, cutoff));
     }
 
     #[test]
