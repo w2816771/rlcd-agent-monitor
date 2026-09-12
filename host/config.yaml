@@ -16,3 +16,13 @@ news:
   edition: US:en
   # Set this to any RSS URL to replace Google News. Leave empty to use the topic above.
   rss_url: ""
+
+# Shell commands run when the board reports a button, with RLCD_EVENT and
+# RLCD_PAGE in the environment. Leave empty to ignore that button. Navigation
+# on the board happens either way.
+# Example: boot_hold: "osascript -e 'set volume output muted true'"
+buttons:
+  key: ""
+  key_hold: ""
+  boot: ""
+  boot_hold: ""

@@ -103,6 +103,12 @@ chunks must arrive in order under one message id. Bump `PROTOCOL_VERSION` in
 `main/monitor_ble.cpp` and `v` in the host `Snapshot` together if the framing
 changes.
 
+Button characteristic `7a1e0003-...6071`, notify only, going the other way. Each
+notification is four bytes: protocol version, sequence, event, and the one-based
+page that was on screen. Events are 1 KEY, 2 KEY held, 3 BOOT, 4 BOOT held. The
+host maps each to a shell command under `buttons` in `host/config.yaml`; the
+board never sends a command, only a fixed code.
+
 ## Conventions
 
 The existing code is deliberately comment-light and uses full words for names.

@@ -31,9 +31,15 @@ const ble_uuid128_t SERVICE_UUID = BLE_UUID128_INIT(
 const ble_uuid128_t TELEMETRY_UUID = BLE_UUID128_INIT(
     0x71, 0x60, 0x5f, 0x4e, 0x3d, 0x2c, 0x1b, 0x8a,
     0x6d, 0x4d, 0x57, 0x7e, 0x02, 0x00, 0x1e, 0x7a);
+// 7a1e0003-7e57-4d6d-8a1b-2c3d4e5f6071
+const ble_uuid128_t BUTTON_UUID = BLE_UUID128_INIT(
+    0x71, 0x60, 0x5f, 0x4e, 0x3d, 0x2c, 0x1b, 0x8a,
+    0x6d, 0x4d, 0x57, 0x7e, 0x03, 0x00, 0x1e, 0x7a);
 
 std::atomic_bool connected{false};
 std::atomic<uint16_t> conn_handle{0};
+uint16_t button_handle = 0;
+uint8_t button_sequence = 0;
 uint8_t own_addr_type;
 SemaphoreHandle_t model_mutex;
 MonitorModel pending_model = monitor_demo_model();
@@ -189,6 +195,11 @@ int telemetry_access(uint16_t, uint16_t, ble_gatt_access_ctxt *ctxt, void *) {
     return 0;
 }
 
+int button_access(uint16_t, uint16_t, ble_gatt_access_ctxt *, void *) {
+    // Buttons are only ever pushed as notifications; nothing to read back.
+    return BLE_ATT_ERR_READ_NOT_PERMITTED;
+}
+
 const ble_gatt_svc_def services[] = {{
     .type = BLE_GATT_SVC_TYPE_PRIMARY,
     .uuid = &SERVICE_UUID.u,
@@ -196,6 +207,11 @@ const ble_gatt_svc_def services[] = {{
         .uuid = &TELEMETRY_UUID.u,
         .access_cb = telemetry_access,
         .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+    }, {
+        .uuid = &BUTTON_UUID.u,
+        .access_cb = button_access,
+        .flags = BLE_GATT_CHR_F_NOTIFY,
+        .val_handle = &button_handle,
     }, {0}},
 }, {0}};
 
@@ -292,6 +308,18 @@ void monitor_ble_init() {
 }
 
 bool monitor_ble_connected() { return connected.load(); }
+
+void monitor_ble_notify_button(uint8_t event, uint8_t page) {
+    if (!connected.load() || !button_handle) return;
+    // Four bytes so the message always fits the minimum ATT MTU, unlike the
+    // chunked telemetry going the other way.
+    const uint8_t packet[] = {PROTOCOL_VERSION, ++button_sequence, event, page};
+    os_mbuf *om = ble_hs_mbuf_from_flat(packet, sizeof(packet));
+    if (!om) return;
+    if (ble_gatts_notify_custom(conn_handle.load(), button_handle, om) != 0) {
+        ESP_LOGW(TAG, "Button notify failed");
+    }
+}
 
 int8_t monitor_ble_rssi() {
     int8_t rssi = 0;

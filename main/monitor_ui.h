@@ -10,6 +10,7 @@ public:
     void show_home();
     void handle_long_press(const MonitorModel &model);
     void update(const MonitorModel &model);
+    int current_page() const { return current_page_; }
 private:
     static constexpr int kPageCount = 5;
     lv_obj_t *pages_[kPageCount]{};

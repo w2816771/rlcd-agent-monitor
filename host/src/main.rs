@@ -15,12 +15,14 @@ use chrono::{DateTime, Local, Utc};
 use rss::Channel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use futures::StreamExt;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 const DEVICE_NAME: &str = "RLCD Monitor";
 const TELEMETRY_UUID: &str = "7a1e0002-7e57-4d6d-8a1b-2c3d4e5f6071";
+const BUTTON_UUID: &str = "7a1e0003-7e57-4d6d-8a1b-2c3d4e5f6071";
 const CHUNK_PAYLOAD: usize = 16; // Always valid with the minimum BLE ATT MTU.
 
 #[derive(Clone, Serialize)]
@@ -85,6 +87,7 @@ struct Config {
     online_refresh_minutes: u64,
     weather: WeatherConfig,
     news: NewsConfig,
+    buttons: ButtonConfig,
 }
 
 impl Default for Config {
@@ -94,6 +97,7 @@ impl Default for Config {
             online_refresh_minutes: 10,
             weather: WeatherConfig::default(),
             news: NewsConfig::default(),
+            buttons: ButtonConfig::default(),
         }
     }
 }
@@ -112,6 +116,28 @@ impl Default for WeatherConfig {
             latitude: 39.9042,
             longitude: 116.4074,
             region: "BEIJING - CHINA".into(),
+        }
+    }
+}
+
+// Shell commands run when the board reports a button. Empty means ignore.
+#[derive(Clone, Deserialize, PartialEq, Default)]
+#[serde(default)]
+struct ButtonConfig {
+    key: String,
+    key_hold: String,
+    boot: String,
+    boot_hold: String,
+}
+
+impl ButtonConfig {
+    fn command_for(&self, event: u8) -> &str {
+        match event {
+            1 => &self.key,
+            2 => &self.key_hold,
+            3 => &self.boot,
+            4 => &self.boot_hold,
+            _ => "",
         }
     }
 }
@@ -159,6 +185,7 @@ async fn main() -> Result<()> {
     println!("RLCD host monitor starting");
     let adapter = bluetooth_adapter().await?;
     let characteristic_uuid = Uuid::parse_str(TELEMETRY_UUID)?;
+    let button_uuid = Uuid::parse_str(BUTTON_UUID)?;
     let mut message_id = 0u8;
     let mut config = load_config();
     let mut net = NetSampler::new();
@@ -166,9 +193,10 @@ async fn main() -> Result<()> {
     let mut online_updated = Instant::now();
 
     loop {
-        match find_and_connect(&adapter, characteristic_uuid).await {
-            Ok((peripheral, characteristic)) => {
+        match find_and_connect(&adapter, characteristic_uuid, button_uuid).await {
+            Ok((peripheral, characteristic, button)) => {
                 println!("Connected to {DEVICE_NAME}");
+                let listener = button.map(|b| spawn_button_listener(peripheral.clone(), b));
                 loop {
                     let still_connected =
                         timeout(Duration::from_secs(2), peripheral.is_connected())
@@ -187,6 +215,9 @@ async fn main() -> Result<()> {
                     {
                         online = refresh_online(&next_config).await;
                         online_updated = Instant::now();
+                    }
+                    if let Ok(mut shared) = button_commands().lock() {
+                        *shared = next_config.buttons.clone();
                     }
                     config = next_config;
                     let snapshot = collect_snapshot(&online, &mut net);
@@ -215,6 +246,9 @@ async fn main() -> Result<()> {
                     );
                     sleep(Duration::from_secs(config.update_seconds.max(5))).await;
                 }
+                if let Some(listener) = listener {
+                    listener.abort();
+                }
             }
             Err(error) => {
                 eprintln!("{error:#}; retrying in 3 seconds");
@@ -236,7 +270,11 @@ async fn bluetooth_adapter() -> Result<Adapter> {
         .context("no Bluetooth adapter found")
 }
 
-async fn find_and_connect(adapter: &Adapter, uuid: Uuid) -> Result<(Peripheral, Characteristic)> {
+async fn find_and_connect(
+    adapter: &Adapter,
+    uuid: Uuid,
+    button_uuid: Uuid,
+) -> Result<(Peripheral, Characteristic, Option<Characteristic>)> {
     adapter.start_scan(ScanFilter::default()).await?;
     for _ in 0..20 {
         for peripheral in adapter.peripherals().await? {
@@ -259,12 +297,17 @@ async fn find_and_connect(adapter: &Adapter, uuid: Uuid) -> Result<(Peripheral, 
             timeout(Duration::from_secs(10), peripheral.discover_services())
                 .await
                 .context("Bluetooth service discovery timed out")??;
-            let characteristic = peripheral
-                .characteristics()
-                .into_iter()
+            let characteristics = peripheral.characteristics();
+            let characteristic = characteristics
+                .iter()
                 .find(|item| item.uuid == uuid)
+                .cloned()
                 .context("telemetry characteristic not found")?;
-            return Ok((peripheral, characteristic));
+            let button = characteristics
+                .iter()
+                .find(|item| item.uuid == button_uuid)
+                .cloned();
+            return Ok((peripheral, characteristic, button));
         }
         sleep(Duration::from_millis(500)).await;
     }
@@ -326,6 +369,58 @@ fn collect_snapshot(online: &OnlineData, net: &mut NetSampler) -> Snapshot {
         headlines: online.headlines.clone(),
         headline_ages: online.headline_ages.clone(),
     }
+}
+
+static BUTTON_COMMANDS: OnceLock<Mutex<ButtonConfig>> = OnceLock::new();
+
+fn button_commands() -> &'static Mutex<ButtonConfig> {
+    BUTTON_COMMANDS.get_or_init(|| Mutex::new(ButtonConfig::default()))
+}
+
+// The board only ever sends a fixed event code, so the command it maps to comes
+// from local config and never from the device.
+fn run_button_command(event: u8, page: u8) {
+    let command = button_commands()
+        .lock()
+        .map(|c| c.command_for(event).to_string())
+        .unwrap_or_default();
+    if command.trim().is_empty() {
+        return;
+    }
+    println!("Button {event} on page {page} runs: {command}");
+    tokio::task::spawn_blocking(move || {
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .env("RLCD_EVENT", event.to_string())
+            .env("RLCD_PAGE", page.to_string())
+            .status();
+    });
+}
+
+fn spawn_button_listener(
+    peripheral: Peripheral,
+    characteristic: Characteristic,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = peripheral.subscribe(&characteristic).await {
+            eprintln!("Button subscribe failed: {error:#}");
+            return;
+        }
+        let mut stream = match peripheral.notifications().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("Button stream failed: {error:#}");
+                return;
+            }
+        };
+        while let Some(note) = stream.next().await {
+            if note.uuid != characteristic.uuid || note.value.len() < 4 || note.value[0] != 1 {
+                continue;
+            }
+            run_button_command(note.value[2], note.value[3]);
+        }
+    })
 }
 
 // Interface counters are cumulative, so a rate needs two samples. The window is

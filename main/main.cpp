@@ -90,10 +90,25 @@ void lvgl_task(void *) {
     bool last_connected = false;
     int64_t last_sensor_update = 0;
     while (true) {
-        if (next_page_requested.exchange(false)) ui.show_next();
-        if (previous_page_requested.exchange(false)) ui.show_previous();
-        if (home_requested.exchange(false)) ui.show_home();
-        if (long_press_requested.exchange(false)) ui.handle_long_press(model);
+        // The page reported is the one on screen when the button went down, so
+        // the host can act on what the user was looking at.
+        const uint8_t page = static_cast<uint8_t>(ui.current_page() + 1);
+        if (next_page_requested.exchange(false)) {
+            monitor_ble_notify_button(1, page);
+            ui.show_next();
+        }
+        if (previous_page_requested.exchange(false)) {
+            monitor_ble_notify_button(3, page);
+            ui.show_previous();
+        }
+        if (home_requested.exchange(false)) {
+            monitor_ble_notify_button(4, page);
+            ui.show_home();
+        }
+        if (long_press_requested.exchange(false)) {
+            monitor_ble_notify_button(2, page);
+            ui.handle_long_press(model);
+        }
         // Full function while a USB host is attached, power save on battery.
         // The same connection already holds light sleep off, so the mode only
         // has to decide how often the board wakes to do work.

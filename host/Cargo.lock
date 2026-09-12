@@ -1244,6 +1244,7 @@ dependencies = [
  "anyhow",
  "btleplug",
  "chrono",
+ "futures",
  "reqwest",
  "rss",
  "serde",
