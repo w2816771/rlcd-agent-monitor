@@ -63,6 +63,8 @@ struct Snapshot {
     claude: AgentUsage,
     processes: Vec<ProcessUsage>,
     process_count: u16,
+    net_down: f32,
+    net_up: f32,
     headlines: Vec<String>,
     headline_ages: Vec<String>,
 }
@@ -159,6 +161,7 @@ async fn main() -> Result<()> {
     let characteristic_uuid = Uuid::parse_str(TELEMETRY_UUID)?;
     let mut message_id = 0u8;
     let mut config = load_config();
+    let mut net = NetSampler::new();
     let mut online = refresh_online(&config).await;
     let mut online_updated = Instant::now();
 
@@ -186,7 +189,7 @@ async fn main() -> Result<()> {
                         online_updated = Instant::now();
                     }
                     config = next_config;
-                    let snapshot = collect_snapshot(&online);
+                    let snapshot = collect_snapshot(&online, &mut net);
                     let json = serde_json::to_vec(&snapshot)?;
                     message_id = message_id.wrapping_add(1);
                     let sent = timeout(
@@ -291,10 +294,11 @@ async fn send_snapshot(
     Ok(())
 }
 
-fn collect_snapshot(online: &OnlineData) -> Snapshot {
+fn collect_snapshot(online: &OnlineData, net: &mut NetSampler) -> Snapshot {
     let (processes, process_count, cpu, codex_active, claude_active) = process_usage();
     let (ram, ram_used_gb, ram_total_gb) = memory_usage();
     let (swap, swap_used_gb) = swap_usage();
+    let (net_down, net_up) = net.rate_kb_per_second();
     let now = Local::now();
     Snapshot {
         v: 1,
@@ -317,9 +321,57 @@ fn collect_snapshot(online: &OnlineData) -> Snapshot {
         claude: claude_usage(claude_active),
         processes,
         process_count,
+        net_down,
+        net_up,
         headlines: online.headlines.clone(),
         headline_ages: online.headline_ages.clone(),
     }
+}
+
+// Interface counters are cumulative, so a rate needs two samples. The window is
+// one update interval, which averages out bursts rather than showing a peak.
+struct NetSampler {
+    last: Option<(u64, u64, Instant)>,
+}
+
+impl NetSampler {
+    fn new() -> Self {
+        Self { last: None }
+    }
+
+    fn rate_kb_per_second(&mut self) -> (f32, f32) {
+        let (down, up) = interface_bytes();
+        let now = Instant::now();
+        let rate = match self.last {
+            Some((previous_down, previous_up, when)) => {
+                let seconds = now.duration_since(when).as_secs_f32().max(0.001);
+                (
+                    down.saturating_sub(previous_down) as f32 / seconds / 1024.0,
+                    up.saturating_sub(previous_up) as f32 / seconds / 1024.0,
+                )
+            }
+            None => (0.0, 0.0),
+        };
+        self.last = Some((down, up, now));
+        rate
+    }
+}
+
+fn interface_bytes() -> (u64, u64) {
+    let mut down = 0;
+    let mut up = 0;
+    for line in command_output("netstat", &["-ibn"]).lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Only the <Link#> row of each interface carries counters once; the
+        // address rows repeat them. Columns are counted from the right because
+        // interfaces without a hardware address leave that column out.
+        if fields.len() < 11 || !fields[0].starts_with("en") || !fields[2].starts_with("<Link#") {
+            continue;
+        }
+        down += fields[fields.len() - 5].parse::<u64>().unwrap_or(0);
+        up += fields[fields.len() - 2].parse::<u64>().unwrap_or(0);
+    }
+    (down, up)
 }
 
 fn command_output(program: &str, args: &[&str]) -> String {

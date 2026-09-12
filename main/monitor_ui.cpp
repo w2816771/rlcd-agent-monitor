@@ -54,6 +54,11 @@ void footer(lv_obj_t *page, const char *left, const char *right) {
     lv_obj_align(r, LV_ALIGN_BOTTOM_RIGHT, -9, -3);
 }
 
+void format_rate(char *out, size_t size, const char *label, float kb_per_second) {
+    if (kb_per_second >= 1024.0f) snprintf(out, size, "%s %.1fM/S", label, kb_per_second / 1024.0f);
+    else snprintf(out, size, "%s %.0fK/S", label, kb_per_second);
+}
+
 void usage_bar(lv_obj_t *parent, int x, int y, int width, int value) {
     lv_obj_t *bar = lv_bar_create(parent);
     lv_obj_set_pos(bar, x, y);
@@ -88,11 +93,16 @@ void MonitorUi::create_overview(const MonitorModel &m) {
     lv_obj_set_style_bg_color(pages_[0], BLACK, 0);
     lv_obj_set_style_bg_opa(pages_[0], LV_OPA_COVER, 0);
     lv_obj_t *status = panel(pages_[0], 0, 0, 400, 30);
-    text(status, m.bluetooth_connected ? "BT |||" : "BT --", 9, 5, &rlcd_font_bold_18);
+    lv_obj_t *bt = text(status, "BT --", 9, 5, &rlcd_font_bold_18);
+    if (m.bluetooth_connected && m.bluetooth_rssi) lv_label_set_text_fmt(bt, "BT %d", m.bluetooth_rssi);
+    else if (m.bluetooth_connected) lv_label_set_text(bt, "BT ON");
     text(status, m.codex.active ? "CDX*" : "CDX", 236, 5, &rlcd_font_bold_18);
     text(status, m.claude.active ? "CLD*" : "CLD", 297, 5, &rlcd_font_bold_18);
+    // On USB the cell voltage is held up by the charger, so a percentage there
+    // would read full even with no battery in the holder.
     lv_obj_t *bat = text(status, "", 354, 5, &rlcd_font_bold_18);
-    lv_label_set_text_fmt(bat, "%u%%", m.board_battery_percent);
+    if (m.usb_connected) lv_label_set_text(bat, "USB");
+    else lv_label_set_text_fmt(bat, "%u%%", m.board_battery_percent);
 
     lv_obj_t *clock = panel(pages_[0], 0, 32, 400, 166);
     // The digit-only font has a 76 px line box, so centre it in the band above
@@ -156,6 +166,17 @@ void MonitorUi::create_system(const MonitorModel &m) {
     lv_obj_align(swap_label, LV_ALIGN_BOTTOM_RIGHT, -64, -8);
     lv_obj_t *swap = text(card, value, 0, 178, &rlcd_font_bold_14);
     lv_obj_set_width(swap, 160); lv_obj_set_style_text_align(swap, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(swap, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
+
+    lv_obj_t *net = panel(pages_[1], 0, 238, 400, 38);
+    text(net, "NET", 12, 11, &rlcd_font_bold_14);
+    char down[20]; char up[20];
+    format_rate(down, sizeof(down), "DN", m.net_down_kbs);
+    format_rate(up, sizeof(up), "UP", m.net_up_kbs);
+    text(net, down, 54, 11, &rlcd_font_bold_14);
+    text(net, up, 186, 11, &rlcd_font_bold_14);
+    lv_obj_t *mode = text(net, m.usb_connected ? "FULL" : "POWER SAVE", 0, 11, &rlcd_font_bold_14);
+    lv_obj_set_width(mode, 150); lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(mode, LV_ALIGN_RIGHT_MID, -12, 0);
     footer(pages_[1], "BOOT: BACK", "KEY: NEXT");
 }
 

@@ -33,6 +33,7 @@ const ble_uuid128_t TELEMETRY_UUID = BLE_UUID128_INIT(
     0x6d, 0x4d, 0x57, 0x7e, 0x02, 0x00, 0x1e, 0x7a);
 
 std::atomic_bool connected{false};
+std::atomic<uint16_t> conn_handle{0};
 uint8_t own_addr_type;
 SemaphoreHandle_t model_mutex;
 MonitorModel pending_model = monitor_demo_model();
@@ -95,6 +96,8 @@ bool parse_snapshot(const char *json) {
     copy_float(root, "swap_used_gb", next.swap_used_gb);
     copy_float(root, "temp", next.cpu_temp_c);
     copy_float(root, "power", next.system_power_w);
+    copy_float(root, "net_down", next.net_down_kbs);
+    copy_float(root, "net_up", next.net_up_kbs);
     cJSON *process_count = cJSON_GetObjectItemCaseSensitive(root, "process_count");
     if (cJSON_IsNumber(process_count)) next.process_count = std::clamp(process_count->valueint, 0, 65535);
     cJSON *weather_c = cJSON_GetObjectItemCaseSensitive(root, "weather_c");
@@ -204,6 +207,7 @@ int gap_event(ble_gap_event *event, void *) {
             connected.store(event->connect.status == 0);
             if (event->connect.status != 0) advertise();
             if (event->connect.status == 0) {
+                conn_handle.store(event->connect.conn_handle);
                 // Apple requires a minimum interval that is a multiple of 15 ms, a
                 // maximum at least 15 ms above it, and interval_max * (latency + 1)
                 // under 2 seconds. macOS rejects the update outright otherwise.
@@ -220,6 +224,7 @@ int gap_event(ble_gap_event *event, void *) {
             return 0;
         case BLE_GAP_EVENT_DISCONNECT:
             connected.store(false);
+            conn_handle.store(0);
             ESP_LOGI(TAG, "Host disconnected; advertising again");
             advertise();
             return 0;
@@ -287,6 +292,12 @@ void monitor_ble_init() {
 }
 
 bool monitor_ble_connected() { return connected.load(); }
+
+int8_t monitor_ble_rssi() {
+    int8_t rssi = 0;
+    if (!connected.load() || ble_gap_conn_rssi(conn_handle.load(), &rssi) != 0) return 0;
+    return rssi;
+}
 
 bool monitor_ble_take_update(MonitorModel &model) {
     if (!model_mutex || xSemaphoreTake(model_mutex, 0) != pdTRUE) return false;

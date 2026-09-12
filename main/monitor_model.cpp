@@ -2,8 +2,8 @@
 
 MonitorModel monitor_demo_model() {
     return {
-        true, 82, 37, 70, 21, 8, 22.4f, 32.0f, 0.6f, 52.0f, 28.6f,
-        24.6f, 47, 38, 184,
+        true, false, 0, 82, 37, 70, 21, 8, 22.4f, 32.0f, 0.6f, 52.0f, 28.6f,
+        24.6f, 47, 38, 184, 0.0f, 0.0f,
         "09:41", "SAT 12 SEP", 29, "PARTLY CLOUDY", "",
         {"CODEX", true, 186, 42, 8, 2.84f, "5H 1%", "7D 20%"},
         {"CLAUDE", false, 94, 67, 4, 1.92f, "5H 0", "7D 1.4M"},

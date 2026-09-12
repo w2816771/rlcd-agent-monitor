@@ -2,6 +2,7 @@
 #include <cstdlib>
 
 #include "driver/gpio.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
@@ -93,10 +94,20 @@ void lvgl_task(void *) {
         if (previous_page_requested.exchange(false)) ui.show_previous();
         if (home_requested.exchange(false)) ui.show_home();
         if (long_press_requested.exchange(false)) ui.handle_long_press(model);
+        // Full function while a USB host is attached, power save on battery.
+        // The same connection already holds light sleep off, so the mode only
+        // has to decide how often the board wakes to do work.
+        const bool usb = usb_serial_jtag_is_connected();
+        const int64_t sensor_period = usb ? 10000000 : 60000000;
+        const uint32_t wait_floor = usb ? 20 : 50;
+        const uint32_t wait_ceiling = usb ? 50 : 150;
+
         MonitorModel next;
         if (monitor_ble_take_update(next)) {
             model = std::move(next);
             model.bluetooth_connected = monitor_ble_connected();
+            model.bluetooth_rssi = monitor_ble_rssi();
+            model.usb_connected = usb;
             const BoardSensorReadings sensors = board_sensors_read();
             if (sensors.battery_valid) model.board_battery_percent = sensors.battery_percent;
             if (sensors.climate_valid) {
@@ -105,12 +116,14 @@ void lvgl_task(void *) {
             }
             model.noise_db = audio_meter_db();
             ui.update(model);
-        } else if (monitor_ble_connected() != last_connected) {
+        } else if (monitor_ble_connected() != last_connected || model.usb_connected != usb) {
             model.bluetooth_connected = monitor_ble_connected();
+            model.bluetooth_rssi = monitor_ble_rssi();
+            model.usb_connected = usb;
             ui.update(model);
         }
         const int64_t now = esp_timer_get_time();
-        if (now - last_sensor_update >= 30000000) {
+        if (now - last_sensor_update >= sensor_period) {
             last_sensor_update = now;
             const BoardSensorReadings sensors = board_sensors_read();
             bool changed = false;
@@ -130,8 +143,8 @@ void lvgl_task(void *) {
         }
         last_connected = monitor_ble_connected();
         uint32_t wait = lv_timer_handler();
-        if (wait < 20) wait = 20;
-        if (wait > 100) wait = 100;
+        if (wait < wait_floor) wait = wait_floor;
+        if (wait > wait_ceiling) wait = wait_ceiling;
         vTaskDelay(pdMS_TO_TICKS(wait));
     }
 }
@@ -178,6 +191,7 @@ extern "C" void app_main() {
 
     model = monitor_demo_model();
     model.bluetooth_connected = false;
+    model.usb_connected = usb_serial_jtag_is_connected();
     ui.create(model);
     board_sensors_init();
     audio_meter_init();

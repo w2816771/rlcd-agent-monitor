@@ -23,6 +23,8 @@ struct ProcessUsage {
 
 struct MonitorModel {
     bool bluetooth_connected;
+    bool usb_connected;
+    int8_t bluetooth_rssi;
     uint8_t board_battery_percent;
     uint8_t cpu_percent;
     uint8_t ram_percent;
@@ -37,6 +39,8 @@ struct MonitorModel {
     uint8_t room_humidity_percent;
     uint8_t noise_db;
     uint16_t process_count;
+    float net_down_kbs;
+    float net_up_kbs;
     std::string time_text;
     std::string date_text;
     int weather_c;
