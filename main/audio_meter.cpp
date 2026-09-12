@@ -21,12 +21,13 @@ constexpr int CHANNELS = 2;
 // A quarter second is long enough to average out a keystroke or a single word
 // without the window itself becoming a power cost.
 constexpr int WINDOW_FRAMES = SAMPLE_RATE / 4;
+constexpr int SETTLE_FRAMES = SAMPLE_RATE / 5;
 constexpr int FLOOR_DB = 20;
 constexpr int CEILING_DB = 120;
 
 std::atomic<uint8_t> noise_db{0};
 std::atomic<uint32_t> period_ms{30000};
-std::atomic<int> offset_db{85};
+std::atomic<int> offset_db{87};
 
 SemaphoreHandle_t history_mutex;
 std::array<uint8_t, kNoiseHistory> history{};
@@ -122,6 +123,11 @@ void meter_task(void *) {
         double squares[CHANNELS] = {};
         int16_t lowest[CHANNELS] = {};
         int16_t highest[CHANNELS] = {};
+        // The codec is powered down between windows, so the first frames after
+        // it opens carry a settling ramp. Measuring that reads as loud sound.
+        for (int settle = 0; settle < SETTLE_FRAMES; settle += frames_per_read) {
+            if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) break;
+        }
         int frames = 0;
         while (frames < WINDOW_FRAMES) {
             if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) break;

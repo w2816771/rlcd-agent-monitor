@@ -29,4 +29,4 @@ buttons:
 
 # Added to the measured microphone level to reach an approximate SPL. Raise or
 # lower it until the board agrees with a reference meter; no reflash needed.
-noise_offset_db: 85
+noise_offset_db: 87

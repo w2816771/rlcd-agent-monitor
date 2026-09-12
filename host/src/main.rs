@@ -101,7 +101,7 @@ impl Default for Config {
             weather: WeatherConfig::default(),
             news: NewsConfig::default(),
             buttons: ButtonConfig::default(),
-            noise_offset_db: 85.0,
+            noise_offset_db: 87.0,
         }
     }
 }
