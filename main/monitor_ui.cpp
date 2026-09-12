@@ -1,5 +1,6 @@
 #include "monitor_ui.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "rlcd_fonts.h"
@@ -43,7 +44,7 @@ void base(lv_obj_t *page, const char *title, int index) {
     lv_obj_set_width(number, 80);
     lv_obj_set_style_text_align(number, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(number, LV_ALIGN_TOP_RIGHT, -10, 5);
-    lv_label_set_text_fmt(number, "%d / 5", index);
+    lv_label_set_text_fmt(number, "%d / %d", index, MonitorUi::kPageCount);
 }
 
 void footer(lv_obj_t *page, const char *left, const char *right) {
@@ -83,6 +84,7 @@ void MonitorUi::create(const MonitorModel &model) {
     create_activity(model);
     create_processes(model);
     create_news(model);
+    create_sound(model);
     for (int i = 0; i < kPageCount; ++i) if (i != current_page_) lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -235,6 +237,47 @@ void MonitorUi::create_news(const MonitorModel &m) {
     }
     char page[32]; snprintf(page, sizeof(page), "%d OF 2 PAGES", news_page_ + 1);
     footer(pages_[4], page, "HOLD KEY: MORE");
+}
+
+void MonitorUi::create_sound(const MonitorModel &m) {
+    pages_[5] = lv_obj_create(lv_screen_active()); base(pages_[5], "SOUND", 6);
+    const AudioLevels &n = m.noise;
+
+    lv_obj_t *card = panel(pages_[5], 0, 32, 400, 84);
+    lv_obj_t *value = text(card, "--", 12, -2, &rlcd_font_bold_72);
+    if (n.current) lv_label_set_text_fmt(value, "%u", n.current);
+    text(card, "DB SPL", 150, 44, &rlcd_font_bold_18);
+    const char *names[] = {"MIN", "AVG", "MAX", "PEAK"};
+    const uint8_t stats[] = {n.minimum, n.average, n.maximum, n.peak};
+    for (int i = 0; i < 4; ++i) {
+        const int x = 236 + (i % 2) * 84;
+        const int y = 8 + (i / 2) * 38;
+        text(card, names[i], x, y, &rlcd_font_bold_14);
+        lv_obj_t *item = text(card, "--", x, y + 15, &rlcd_font_bold_18);
+        if (stats[i]) lv_label_set_text_fmt(item, "%u", stats[i]);
+    }
+
+    // One bar per measured window, oldest on the left. The scale is fixed so a
+    // quiet room and a loud one are comparable at a glance.
+    constexpr int kFloor = 20;
+    constexpr int kRange = 80;
+    constexpr int kGraphHeight = 138;
+    lv_obj_t *graph = panel(pages_[5], 0, 120, 400, kGraphHeight);
+    for (int line = 1; line < 4; ++line) {
+        rule(graph, 0, kGraphHeight - line * kGraphHeight / 4, 400);
+    }
+    const int bar_width = 5;
+    for (size_t i = 0; i < n.filled && i < kNoiseHistory; ++i) {
+        const int level = std::clamp(static_cast<int>(n.history[i]) - kFloor, 1, kRange);
+        const int height = level * (kGraphHeight - 4) / kRange;
+        panel(graph, 9 + static_cast<int>(i) * (bar_width + 1), kGraphHeight - height, bar_width,
+              height, BLACK);
+    }
+    if (!n.filled) text(graph, "LISTENING", 12, 8, &rlcd_font_bold_18);
+
+    char span[28];
+    snprintf(span, sizeof(span), "%u WINDOWS", static_cast<unsigned>(n.filled));
+    footer(pages_[5], span, "BOOT: BACK");
 }
 
 void MonitorUi::show_next() {

@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include "audio_meter.h"
+
 struct AgentUsage {
     std::string name;
     bool active;
@@ -51,6 +53,9 @@ struct MonitorModel {
     std::array<ProcessUsage, 5> processes;
     std::array<std::string, 8> headlines;
     std::array<std::string, 8> headline_ages;
+    // Local, not from the host. Trailing so the demo model stays positional.
+    AudioLevels noise{};
+    float noise_offset_db = 85.0f;
 };
 
 MonitorModel monitor_demo_model();

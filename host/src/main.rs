@@ -67,6 +67,7 @@ struct Snapshot {
     process_count: u16,
     net_down: f32,
     net_up: f32,
+    noise_offset: f32,
     headlines: Vec<String>,
     headline_ages: Vec<String>,
 }
@@ -88,6 +89,8 @@ struct Config {
     weather: WeatherConfig,
     news: NewsConfig,
     buttons: ButtonConfig,
+    // dB added to the measured microphone level to reach an approximate SPL.
+    noise_offset_db: f32,
 }
 
 impl Default for Config {
@@ -98,6 +101,7 @@ impl Default for Config {
             weather: WeatherConfig::default(),
             news: NewsConfig::default(),
             buttons: ButtonConfig::default(),
+            noise_offset_db: 85.0,
         }
     }
 }
@@ -220,7 +224,7 @@ async fn main() -> Result<()> {
                         *shared = next_config.buttons.clone();
                     }
                     config = next_config;
-                    let snapshot = collect_snapshot(&online, &mut net);
+                    let snapshot = collect_snapshot(&online, &mut net, config.noise_offset_db);
                     let json = serde_json::to_vec(&snapshot)?;
                     message_id = message_id.wrapping_add(1);
                     let sent = timeout(
@@ -337,7 +341,7 @@ async fn send_snapshot(
     Ok(())
 }
 
-fn collect_snapshot(online: &OnlineData, net: &mut NetSampler) -> Snapshot {
+fn collect_snapshot(online: &OnlineData, net: &mut NetSampler, noise_offset: f32) -> Snapshot {
     let (processes, process_count, cpu, codex_active, claude_active) = process_usage();
     let (ram, ram_used_gb, ram_total_gb) = memory_usage();
     let (swap, swap_used_gb) = swap_usage();
@@ -366,6 +370,7 @@ fn collect_snapshot(online: &OnlineData, net: &mut NetSampler) -> Snapshot {
         process_count,
         net_down,
         net_up,
+        noise_offset,
         headlines: online.headlines.clone(),
         headline_ages: online.headline_ages.clone(),
     }

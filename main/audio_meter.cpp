@@ -11,11 +11,46 @@
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 namespace {
 constexpr char TAG[] = "audio-meter";
+constexpr int SAMPLE_RATE = 16000;
+constexpr int CHANNELS = 2;
+// A quarter second is long enough to average out a keystroke or a single word
+// without the window itself becoming a power cost.
+constexpr int WINDOW_FRAMES = SAMPLE_RATE / 4;
+constexpr int FLOOR_DB = 20;
+constexpr int CEILING_DB = 120;
+
 std::atomic<uint8_t> noise_db{0};
+std::atomic<uint32_t> period_ms{30000};
+std::atomic<int> offset_db{85};
+
+SemaphoreHandle_t history_mutex;
+std::array<uint8_t, kNoiseHistory> history{};
+size_t history_filled = 0;
+uint8_t peak_db = 0;
+
+uint8_t to_spl(double rms) {
+    if (rms < 0.5) return FLOOR_DB;
+    const double dbfs = 20.0 * std::log10(rms / 32768.0);
+    return static_cast<uint8_t>(
+        std::clamp(static_cast<int>(std::lround(dbfs)) + offset_db.load(), FLOOR_DB, CEILING_DB));
+}
+
+void record(uint8_t measured, uint8_t measured_peak) {
+    if (!history_mutex || xSemaphoreTake(history_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    if (history_filled < history.size()) {
+        history[history_filled++] = measured;
+    } else {
+        std::rotate(history.begin(), history.begin() + 1, history.end());
+        history.back() = measured;
+    }
+    peak_db = std::max(peak_db, measured_peak);
+    xSemaphoreGive(history_mutex);
+}
 
 void meter_task(void *) {
     i2s_chan_handle_t rx = nullptr;
@@ -26,7 +61,7 @@ void meter_task(void *) {
         return;
     }
     i2s_tdm_config_t tdm_config = {
-        .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(16000),
+        .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO,
             static_cast<i2s_tdm_slot_mask_t>(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3)),
@@ -68,8 +103,8 @@ void meter_task(void *) {
     device_config.dev_type = ESP_CODEC_DEV_TYPE_IN;
     esp_codec_dev_handle_t recorder = esp_codec_dev_new(&device_config);
     esp_codec_dev_sample_info_t sample{};
-    sample.sample_rate = 16000;
-    sample.channel = 2;
+    sample.sample_rate = SAMPLE_RATE;
+    sample.channel = CHANNELS;
     sample.bits_per_sample = 16;
     if (!recorder || esp_codec_dev_open(recorder, &sample) != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "Microphone open failed");
@@ -78,30 +113,49 @@ void meter_task(void *) {
     }
     esp_codec_dev_set_in_gain(recorder, 35.0f);
     int16_t samples[512]{};
+    constexpr int frames_per_read = sizeof(samples) / sizeof(samples[0]) / CHANNELS;
     while (true) {
-        double sum = 0.0;
-        size_t count = 0;
-        for (int block = 0; block < 8; ++block) {
-            if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) continue;
-            for (int16_t value : samples) {
-                const double normalized = value / 32768.0;
-                sum += normalized * normalized;
-                ++count;
+        // Each microphone sits at its own resting level, so the mean has to come
+        // out per channel before the energy is measured. Squaring the raw sample
+        // instead measures that offset, which swamps the sound entirely.
+        double sums[CHANNELS] = {};
+        double squares[CHANNELS] = {};
+        int16_t lowest[CHANNELS] = {};
+        int16_t highest[CHANNELS] = {};
+        int frames = 0;
+        while (frames < WINDOW_FRAMES) {
+            if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) break;
+            for (int frame = 0; frame < frames_per_read; ++frame) {
+                for (int channel = 0; channel < CHANNELS; ++channel) {
+                    const int16_t value = samples[frame * CHANNELS + channel];
+                    sums[channel] += value;
+                    squares[channel] += static_cast<double>(value) * value;
+                    lowest[channel] = std::min(lowest[channel], value);
+                    highest[channel] = std::max(highest[channel], value);
+                }
             }
-        }
-        if (count) {
-            const double rms = std::sqrt(sum / count);
-            // Approximate SPL. The +100 dB offset is a practical calibration for the onboard mic.
-            const int db = rms > 0.00001 ? static_cast<int>(std::lround(20.0 * std::log10(rms) + 100.0)) : 20;
-            const uint8_t measured = static_cast<uint8_t>(std::clamp(db, 20, 110));
-            const uint8_t previous = noise_db.load();
-            noise_db.store(previous ? static_cast<uint8_t>((previous * 3 + measured) / 4) : measured);
+            frames += frames_per_read;
         }
 
-        // Measure a short window, then shut down the codec and I2S clocks between snapshots.
+        if (frames > 0) {
+            double energy = 0.0;
+            double excursion = 0.0;
+            for (int channel = 0; channel < CHANNELS; ++channel) {
+                const double mean = sums[channel] / frames;
+                const double variance = std::max(squares[channel] / frames - mean * mean, 0.0);
+                energy += variance;
+                excursion = std::max(excursion,
+                                     std::max(highest[channel] - mean, mean - lowest[channel]));
+            }
+            const uint8_t measured = to_spl(std::sqrt(energy / CHANNELS));
+            record(measured, to_spl(excursion));
+            noise_db.store(measured);
+        }
+
+        // Shut the codec and the I2S clocks down between windows.
         esp_codec_dev_close(recorder);
         i2s_channel_disable(rx);
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        vTaskDelay(pdMS_TO_TICKS(period_ms.load()));
         if (i2s_channel_enable(rx) != ESP_OK) {
             ESP_LOGW(TAG, "Microphone wake failed; retrying");
             vTaskDelay(pdMS_TO_TICKS(5000));
@@ -118,6 +172,36 @@ void meter_task(void *) {
 }
 }  // namespace
 
-void audio_meter_init() { xTaskCreatePinnedToCore(meter_task, "audio-meter", 6144, nullptr, 3, nullptr, 0); }
+void audio_meter_init() {
+    history_mutex = xSemaphoreCreateMutex();
+    xTaskCreatePinnedToCore(meter_task, "audio-meter", 6144, nullptr, 3, nullptr, 0);
+}
 
 uint8_t audio_meter_db() { return noise_db.load(); }
+
+void audio_meter_set_period_ms(uint32_t value) { period_ms.store(value); }
+
+void audio_meter_set_offset_db(float value) {
+    offset_db.store(static_cast<int>(std::lround(value)));
+}
+
+AudioLevels audio_meter_levels() {
+    AudioLevels levels{};
+    levels.current = noise_db.load();
+    if (!history_mutex || xSemaphoreTake(history_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return levels;
+    levels.filled = static_cast<uint8_t>(history_filled);
+    levels.history = history;
+    levels.peak = peak_db;
+    if (history_filled) {
+        unsigned total = 0;
+        levels.minimum = 255;
+        for (size_t i = 0; i < history_filled; ++i) {
+            total += history[i];
+            levels.minimum = std::min(levels.minimum, history[i]);
+            levels.maximum = std::max(levels.maximum, history[i]);
+        }
+        levels.average = static_cast<uint8_t>(total / history_filled);
+    }
+    xSemaphoreGive(history_mutex);
+    return levels;
+}

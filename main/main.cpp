@@ -113,7 +113,11 @@ void lvgl_task(void *) {
         // The same connection already holds light sleep off, so the mode only
         // has to decide how often the board wakes to do work.
         const bool usb = usb_serial_jtag_is_connected();
-        const int64_t sensor_period = usb ? 10000000 : 60000000;
+        // The sound page is a live graph, so while it is on screen and the
+        // board is not on battery the loop refreshes far more often.
+        const bool watching_sound = ui.current_page() == 5;
+        const int64_t sensor_period = usb ? (watching_sound ? 3000000 : 10000000) : 60000000;
+        audio_meter_set_period_ms(usb ? 2000 : 30000);
         const uint32_t wait_floor = usb ? 20 : 50;
         const uint32_t wait_ceiling = usb ? 50 : 150;
 
@@ -130,6 +134,8 @@ void lvgl_task(void *) {
                 model.room_humidity_percent = sensors.humidity_percent;
             }
             model.noise_db = audio_meter_db();
+            model.noise = audio_meter_levels();
+            audio_meter_set_offset_db(model.noise_offset_db);
             ui.update(model);
         } else if (monitor_ble_connected() != last_connected || model.usb_connected != usb) {
             model.bluetooth_connected = monitor_ble_connected();
@@ -154,6 +160,8 @@ void lvgl_task(void *) {
             const uint8_t noise = audio_meter_db();
             const int noise_delta = static_cast<int>(model.noise_db) - static_cast<int>(noise);
             if (noise && (noise_delta <= -3 || noise_delta >= 3)) { model.noise_db = noise; changed = true; }
+            model.noise = audio_meter_levels();
+            if (watching_sound) changed = true;
             if (changed) ui.update(model);
         }
         last_connected = monitor_ble_connected();

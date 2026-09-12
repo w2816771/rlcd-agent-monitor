@@ -104,6 +104,7 @@ bool parse_snapshot(const char *json) {
     copy_float(root, "power", next.system_power_w);
     copy_float(root, "net_down", next.net_down_kbs);
     copy_float(root, "net_up", next.net_up_kbs);
+    copy_float(root, "noise_offset", next.noise_offset_db);
     cJSON *process_count = cJSON_GetObjectItemCaseSensitive(root, "process_count");
     if (cJSON_IsNumber(process_count)) next.process_count = std::clamp(process_count->valueint, 0, 65535);
     cJSON *weather_c = cJSON_GetObjectItemCaseSensitive(root, "weather_c");
