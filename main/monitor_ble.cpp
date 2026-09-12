@@ -84,6 +84,7 @@ bool parse_snapshot(const char *json) {
     copy_string(root, "time", next.time_text);
     copy_string(root, "date", next.date_text);
     copy_string(root, "weather", next.weather_text);
+    copy_string(root, "region", next.region_text);
     copy_int(root, "battery", next.board_battery_percent);
     copy_int(root, "cpu", next.cpu_percent);
     copy_int(root, "ram", next.ram_percent);
@@ -202,6 +203,19 @@ int gap_event(ble_gap_event *event, void *) {
         case BLE_GAP_EVENT_CONNECT:
             connected.store(event->connect.status == 0);
             if (event->connect.status != 0) advertise();
+            if (event->connect.status == 0) {
+                // Apple requires a minimum interval that is a multiple of 15 ms, a
+                // maximum at least 15 ms above it, and interval_max * (latency + 1)
+                // under 2 seconds. macOS rejects the update outright otherwise.
+                ble_gap_upd_params params{};
+                params.itvl_min = 72;  // 90 ms
+                params.itvl_max = 96;  // 120 ms
+                params.latency = 4;
+                params.supervision_timeout = 600;  // 6 seconds
+                params.min_ce_len = 0;
+                params.max_ce_len = 0;
+                ble_gap_update_params(event->connect.conn_handle, &params);
+            }
             ESP_LOGI(TAG, "Host %s", connected.load() ? "connected" : "connection failed");
             return 0;
         case BLE_GAP_EVENT_DISCONNECT:

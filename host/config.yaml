@@ -1,16 +1,18 @@
 # Changes are reloaded automatically by the running host service.
-update_seconds: 15
+update_seconds: 60
 online_refresh_minutes: 10
 
 weather:
   # Beijing city centre
   latitude: 39.9042
   longitude: 116.4074
+  # Shown under the clock. Keep it short enough for the 400 px page.
+  region: BEIJING - CHINA
 
 news:
   topic: technology
   language: en-US
   country: US
   edition: US:en
-  # Set this to any RSS/Atom URL to replace Google News. Leave empty to use the topic above.
+  # Set this to any RSS URL to replace Google News. Leave empty to use the topic above.
   rss_url: ""

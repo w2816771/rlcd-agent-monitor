@@ -29,6 +29,23 @@ std::atomic<float> battery_voltage{0.0f};
 std::atomic_bool climate_valid{false};
 std::atomic_bool battery_valid{false};
 
+uint8_t voltage_to_percent(float volts) {
+    // Typical single-cell 18650 discharge curve. This avoids the misleading fast
+    // drop produced by a linear conversion around the voltage plateau.
+    constexpr float voltage[] = {3.00f, 3.30f, 3.55f, 3.65f, 3.70f, 3.74f,
+                                 3.79f, 3.85f, 3.92f, 4.00f, 4.10f, 4.20f};
+    constexpr uint8_t percent[] = {0, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+    if (volts <= voltage[0]) return 0;
+    if (volts >= voltage[11]) return 100;
+    for (size_t i = 1; i < 12; ++i) {
+        if (volts <= voltage[i]) {
+            const float position = (volts - voltage[i - 1]) / (voltage[i] - voltage[i - 1]);
+            return static_cast<uint8_t>(std::lround(percent[i - 1] + position * (percent[i] - percent[i - 1])));
+        }
+    }
+    return 100;
+}
+
 uint8_t crc8(const uint8_t *data, size_t length) {
     uint8_t crc = 0xff;
     for (size_t i = 0; i < length; ++i) {
@@ -66,13 +83,20 @@ void update_climate() {
 
 void update_battery() {
     if (!adc) return;
-    int raw = 0;
-    if (adc_oneshot_read(adc, ADC_CHANNEL_3, &raw) != ESP_OK) return;
+    int64_t raw_total = 0;
+    for (int i = 0; i < 16; ++i) {
+        int sample = 0;
+        if (adc_oneshot_read(adc, ADC_CHANNEL_3, &sample) != ESP_OK) return;
+        raw_total += sample;
+    }
+    const int raw = static_cast<int>(raw_total / 16);
     int millivolts = 0;
     if (calibration && adc_cali_raw_to_voltage(calibration, raw, &millivolts) == ESP_OK) {
-        const float volts = millivolts * 0.003f;
+        const float measured = millivolts * 0.003f;
+        const float previous = battery_voltage.load();
+        const float volts = previous > 0.0f ? previous * 0.8f + measured * 0.2f : measured;
         battery_voltage.store(volts);
-        battery.store(static_cast<uint8_t>(std::clamp(std::lround((volts - 3.0f) * 100.0f / 1.12f), 0L, 100L)));
+        battery.store(voltage_to_percent(volts));
         battery_valid.store(true);
     }
 }
@@ -81,7 +105,7 @@ void sensor_task(void *) {
     while (true) {
         update_climate();
         update_battery();
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
 }  // namespace

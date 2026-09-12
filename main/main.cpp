@@ -4,8 +4,11 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 
@@ -47,27 +50,38 @@ void flush(lv_display_t *disp, const lv_area_t *area, uint8_t *pixels) {
     lv_display_flush_ready(disp);
 }
 
+QueueHandle_t button_queue;
+
+// The pins wake the chip from light sleep, which only supports level triggers,
+// so the handler masks its own source and the task re-arms it after release.
+void IRAM_ATTR button_isr(void *argument) {
+    const auto pin = static_cast<gpio_num_t>(reinterpret_cast<intptr_t>(argument));
+    gpio_intr_disable(pin);
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(button_queue, &pin, &woken);
+    if (woken) portYIELD_FROM_ISR();
+}
+
 void button_task(void *) {
-    int previous_key = 1;
-    int previous_boot = 1;
-    int64_t key_pressed_at = 0;
-    int64_t boot_pressed_at = 0;
+    gpio_num_t pin;
     while (true) {
-        const int key = gpio_get_level(KEY_PIN);
-        const int boot = gpio_get_level(BOOT_PIN);
-        if (previous_key == 1 && key == 0) key_pressed_at = esp_timer_get_time();
-        if (previous_key == 0 && key == 1) {
-            if (esp_timer_get_time() - key_pressed_at >= 700000) long_press_requested.store(true);
-            else next_page_requested.store(true);
+        if (xQueueReceive(button_queue, &pin, portMAX_DELAY) != pdTRUE) continue;
+        const int64_t pressed_at = esp_timer_get_time();
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (gpio_get_level(pin) == 0) {
+            while (gpio_get_level(pin) == 0) vTaskDelay(pdMS_TO_TICKS(20));
+            const bool long_press = esp_timer_get_time() - pressed_at >= 700000;
+            if (pin == KEY_PIN) {
+                if (long_press) long_press_requested.store(true);
+                else next_page_requested.store(true);
+            } else {
+                if (long_press) home_requested.store(true);
+                else previous_page_requested.store(true);
+            }
         }
-        if (previous_boot == 1 && boot == 0) boot_pressed_at = esp_timer_get_time();
-        if (previous_boot == 0 && boot == 1) {
-            if (esp_timer_get_time() - boot_pressed_at >= 700000) home_requested.store(true);
-            else previous_page_requested.store(true);
-        }
-        previous_key = key;
-        previous_boot = boot;
-        vTaskDelay(pdMS_TO_TICKS(40));
+        vTaskDelay(pdMS_TO_TICKS(20));
+        xQueueReset(button_queue);
+        gpio_intr_enable(pin);
     }
 }
 
@@ -96,7 +110,7 @@ void lvgl_task(void *) {
             ui.update(model);
         }
         const int64_t now = esp_timer_get_time();
-        if (now - last_sensor_update >= 5000000) {
+        if (now - last_sensor_update >= 30000000) {
             last_sensor_update = now;
             const BoardSensorReadings sensors = board_sensors_read();
             bool changed = false;
@@ -110,13 +124,14 @@ void lvgl_task(void *) {
                 changed = true;
             }
             const uint8_t noise = audio_meter_db();
-            if (noise && model.noise_db != noise) { model.noise_db = noise; changed = true; }
+            const int noise_delta = static_cast<int>(model.noise_db) - static_cast<int>(noise);
+            if (noise && (noise_delta <= -3 || noise_delta >= 3)) { model.noise_db = noise; changed = true; }
             if (changed) ui.update(model);
         }
         last_connected = monitor_ble_connected();
         uint32_t wait = lv_timer_handler();
-        if (wait < 5) wait = 5;
-        if (wait > 20) wait = 20;
+        if (wait < 20) wait = 20;
+        if (wait > 100) wait = 100;
         vTaskDelay(pdMS_TO_TICKS(wait));
     }
 }
@@ -124,6 +139,15 @@ void lvgl_task(void *) {
 
 extern "C" void app_main() {
     ESP_LOGI("agent-monitor", "Starting 400x300 RLCD agent monitor");
+
+    // Automatic light sleep is not implied by dynamic frequency scaling; it has
+    // to be requested here and needs tickless idle in sdkconfig to take effect.
+    esp_pm_config_t power{};
+    power.max_freq_mhz = 80;
+    power.min_freq_mhz = 40;
+    power.light_sleep_enable = true;
+    ESP_ERROR_CHECK(esp_pm_configure(&power));
+
     display.RLCD_Init();
     lv_init();
     lv_tick_set_cb(tick_ms);
@@ -141,7 +165,16 @@ extern "C" void app_main() {
     key.pin_bit_mask = (1ULL << KEY_PIN) | (1ULL << BOOT_PIN);
     key.mode = GPIO_MODE_INPUT;
     key.pull_up_en = GPIO_PULLUP_ENABLE;
+    key.intr_type = GPIO_INTR_LOW_LEVEL;
     ESP_ERROR_CHECK(gpio_config(&key));
+    button_queue = xQueueCreate(4, sizeof(gpio_num_t));
+    configASSERT(button_queue);
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+    for (const gpio_num_t pin : {KEY_PIN, BOOT_PIN}) {
+        ESP_ERROR_CHECK(gpio_isr_handler_add(pin, button_isr, reinterpret_cast<void *>(pin)));
+        ESP_ERROR_CHECK(gpio_wakeup_enable(pin, GPIO_INTR_LOW_LEVEL));
+    }
+    ESP_ERROR_CHECK(esp_sleep_enable_gpio_wakeup());
 
     model = monitor_demo_model();
     model.bluetooth_connected = false;

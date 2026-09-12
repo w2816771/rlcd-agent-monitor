@@ -94,14 +94,19 @@ void MonitorUi::create_overview(const MonitorModel &m) {
     lv_obj_t *bat = text(status, "", 354, 5, &rlcd_font_bold_18);
     lv_label_set_text_fmt(bat, "%u%%", m.board_battery_percent);
 
-    lv_obj_t *clock = panel(pages_[0], 0, 32, 400, 160);
-    text(clock, m.time_text.c_str(), 12, 5, &rlcd_font_bold_72);
-    rule(clock, 0, 111, 400);
-    text(clock, m.date_text.c_str(), 10, 122, &rlcd_font_bold_18);
-    lv_obj_t *weather = text(clock, "", 0, 122, &rlcd_font_bold_18);
-    lv_obj_set_width(weather, 185);
+    lv_obj_t *clock = panel(pages_[0], 0, 32, 400, 166);
+    // The digit-only font has a 76 px line box, so centre it in the band above
+    // the rule rather than trusting the nominal 104 px size.
+    lv_obj_t *time = text(clock, m.time_text.c_str(), 0, 21, &rlcd_font_bold_104);
+    lv_obj_set_width(time, 400); lv_obj_set_style_text_align(time, LV_TEXT_ALIGN_CENTER, 0);
+    rule(clock, 0, 118, 400);
+    text(clock, m.date_text.c_str(), 9, 123, &rlcd_font_bold_14);
+    lv_obj_t *region = text(clock, m.region_text.c_str(), 0, 145, &rlcd_font_bold_14);
+    lv_obj_set_width(region, 400); lv_obj_set_style_text_align(region, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t *weather = text(clock, "", 0, 123, &rlcd_font_bold_14);
+    lv_obj_set_width(weather, 145);
     lv_obj_set_style_text_align(weather, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(weather, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
+    lv_obj_align(weather, LV_ALIGN_TOP_RIGHT, -9, 123);
     lv_label_set_text_fmt(weather, "%dC %s", m.weather_c, m.weather_text.c_str());
 
     const int x[] = {7, 105, 203};
@@ -129,7 +134,7 @@ void MonitorUi::create_overview(const MonitorModel &m) {
 }
 
 void MonitorUi::create_system(const MonitorModel &m) {
-    pages_[1] = lv_obj_create(lv_screen_active()); base(pages_[1], "HOST", 2);
+    pages_[1] = lv_obj_create(lv_screen_active()); base(pages_[1], "HOST SYSTEM", 2);
     lv_obj_t *card = panel(pages_[1], 0, 32, 400, 202);
     char value[24];
     text(card, "CPU USAGE", 12, 10, &rlcd_font_bold_18);
@@ -145,14 +150,17 @@ void MonitorUi::create_system(const MonitorModel &m) {
     usage_bar(card, 12, 150, 376, m.ram_percent);
     snprintf(value, sizeof(value), "%.1f / %.0f GB", m.ram_used_gb, m.ram_total_gb);
     text(card, value, 12, 176, &rlcd_font_bold_14);
-    snprintf(value, sizeof(value), "SWAP %.1fG", m.swap_used_gb);
-    lv_obj_t *swap = text(card, value, 0, 176, &rlcd_font_bold_14);
+    snprintf(value, sizeof(value), "%.1fG", m.swap_used_gb);
+    lv_obj_t *swap_label = text(card, "SWAP", 0, 178, &rlcd_font_bold_14);
+    lv_obj_set_width(swap_label, 250); lv_obj_set_style_text_align(swap_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(swap_label, LV_ALIGN_BOTTOM_RIGHT, -64, -8);
+    lv_obj_t *swap = text(card, value, 0, 178, &rlcd_font_bold_14);
     lv_obj_set_width(swap, 160); lv_obj_set_style_text_align(swap, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(swap, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
     footer(pages_[1], "BOOT: BACK", "KEY: NEXT");
 }
 
 void MonitorUi::create_activity(const MonitorModel &m) {
-    pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENTS", 3);
+    pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENT USAGE", 3);
     lv_obj_t *total = panel(pages_[2], 0, 32, 400, 98);
     text(total, "TOKENS TODAY", 12, 8, &rlcd_font_bold_18);
     char token_total[24];
@@ -180,9 +188,9 @@ void MonitorUi::create_processes(const MonitorModel &m) {
         lv_obj_t *row = panel(pages_[3], 0, 32 + i * 60, 400, 58);
         lv_obj_t *name = text(row, p.name.empty() ? "-" : p.name.c_str(), 11, 5, &rlcd_font_bold_26);
         lv_obj_set_width(name, 260); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
-        char process_meta[32]; snprintf(process_meta, sizeof(process_meta), "RAM %.1fG - %.1f%%", p.ram_mb / 1024.0f,
+        char process_meta[32]; snprintf(process_meta, sizeof(process_meta), "%.1fG - %.1f%%", p.ram_mb / 1024.0f,
                                         m.ram_total_gb > 0 ? p.ram_mb / 1024.0f * 100.0f / m.ram_total_gb : 0.0f);
-        text(row, process_meta, 12, 38, &rlcd_font_bold_14);
+        text(row, "RAM", 12, 38, &rlcd_font_bold_14); text(row, process_meta, 50, 38, &rlcd_font_bold_14);
         char process_cpu[16]; snprintf(process_cpu, sizeof(process_cpu), "%.0f%%", p.cpu_percent);
         lv_obj_t *cpu = text(row, process_cpu, 0, 6, &rlcd_font_bold_40);
         lv_obj_set_width(cpu, 120); lv_obj_set_style_text_align(cpu, LV_TEXT_ALIGN_RIGHT, 0);
@@ -205,7 +213,7 @@ void MonitorUi::create_news(const MonitorModel &m) {
         lv_obj_align(age, LV_ALIGN_RIGHT_MID, -9, 0);
     }
     char page[32]; snprintf(page, sizeof(page), "%d OF 2 PAGES", news_page_ + 1);
-    footer(pages_[4], page, "HOLD: MORE");
+    footer(pages_[4], page, "HOLD KEY: MORE");
 }
 
 void MonitorUi::show_next() {

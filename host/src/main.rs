@@ -48,6 +48,7 @@ struct Snapshot {
     date: String,
     weather_c: i32,
     weather: String,
+    region: String,
     battery: u8,
     cpu: u8,
     ram: u8,
@@ -70,6 +71,7 @@ struct Snapshot {
 struct OnlineData {
     weather_c: i32,
     weather: String,
+    region: String,
     headlines: Vec<String>,
     headline_ages: Vec<String>,
 }
@@ -99,6 +101,7 @@ impl Default for Config {
 struct WeatherConfig {
     latitude: f64,
     longitude: f64,
+    region: String,
 }
 
 impl Default for WeatherConfig {
@@ -106,6 +109,7 @@ impl Default for WeatherConfig {
         Self {
             latitude: 39.9042,
             longitude: 116.4074,
+            region: "BEIJING - CHINA".into(),
         }
     }
 }
@@ -298,6 +302,7 @@ fn collect_snapshot(online: &OnlineData) -> Snapshot {
         date: now.format("%a %d %b").to_string().to_uppercase(),
         weather_c: online.weather_c,
         weather: online.weather.clone(),
+        region: online.region.clone(),
         battery: battery_percent(),
         cpu,
         ram,
@@ -635,6 +640,7 @@ async fn refresh_online(config: &Config) -> OnlineData {
     OnlineData {
         weather_c,
         weather,
+        region: ascii(&config.weather.region.to_uppercase(), 34),
         headlines,
         headline_ages,
     }

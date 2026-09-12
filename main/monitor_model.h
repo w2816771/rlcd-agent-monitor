@@ -41,6 +41,7 @@ struct MonitorModel {
     std::string date_text;
     int weather_c;
     std::string weather_text;
+    std::string region_text;
     AgentUsage codex;
     AgentUsage claude;
     std::array<ProcessUsage, 5> processes;

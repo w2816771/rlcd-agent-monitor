@@ -79,18 +79,41 @@ void meter_task(void *) {
     esp_codec_dev_set_in_gain(recorder, 35.0f);
     int16_t samples[512]{};
     while (true) {
-        if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) continue;
         double sum = 0.0;
-        for (int16_t value : samples) {
-            const double normalized = value / 32768.0;
-            sum += normalized * normalized;
+        size_t count = 0;
+        for (int block = 0; block < 8; ++block) {
+            if (esp_codec_dev_read(recorder, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) continue;
+            for (int16_t value : samples) {
+                const double normalized = value / 32768.0;
+                sum += normalized * normalized;
+                ++count;
+            }
         }
-        const double rms = std::sqrt(sum / 512.0);
-        // Approximate SPL. The +100 dB offset is a practical calibration for the onboard mic.
-        const int db = rms > 0.00001 ? static_cast<int>(std::lround(20.0 * std::log10(rms) + 100.0)) : 20;
-        const uint8_t measured = static_cast<uint8_t>(std::clamp(db, 20, 110));
-        const uint8_t previous = noise_db.load();
-        noise_db.store(previous ? static_cast<uint8_t>((previous * 3 + measured) / 4) : measured);
+        if (count) {
+            const double rms = std::sqrt(sum / count);
+            // Approximate SPL. The +100 dB offset is a practical calibration for the onboard mic.
+            const int db = rms > 0.00001 ? static_cast<int>(std::lround(20.0 * std::log10(rms) + 100.0)) : 20;
+            const uint8_t measured = static_cast<uint8_t>(std::clamp(db, 20, 110));
+            const uint8_t previous = noise_db.load();
+            noise_db.store(previous ? static_cast<uint8_t>((previous * 3 + measured) / 4) : measured);
+        }
+
+        // Measure a short window, then shut down the codec and I2S clocks between snapshots.
+        esp_codec_dev_close(recorder);
+        i2s_channel_disable(rx);
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        if (i2s_channel_enable(rx) != ESP_OK) {
+            ESP_LOGW(TAG, "Microphone wake failed; retrying");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        if (esp_codec_dev_open(recorder, &sample) != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "Microphone codec wake failed; retrying");
+            i2s_channel_disable(rx);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        esp_codec_dev_set_in_gain(recorder, 35.0f);
     }
 }
 }  // namespace
