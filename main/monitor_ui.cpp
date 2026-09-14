@@ -55,6 +55,34 @@ void footer(lv_obj_t *page, const char *left, const char *right) {
     lv_obj_align(r, LV_ALIGN_BOTTOM_RIGHT, -9, -3);
 }
 
+// Names the host a page's data came from. Outlined while that host is live,
+// inverted with the data's age once it has dropped, so stale numbers never pass
+// for current ones.
+void source_tag(lv_obj_t *page, const MonitorModel &m) {
+    if (m.source_name.empty()) return;
+    char label[40];
+    if (m.source_live) {
+        snprintf(label, sizeof(label), "%s", m.source_name.c_str());
+    } else if (m.source_age_seconds >= 3600) {
+        snprintf(label, sizeof(label), "%s %luH", m.source_name.c_str(), (unsigned long)(m.source_age_seconds / 3600));
+    } else {
+        snprintf(label, sizeof(label), "%s %luM", m.source_name.c_str(), (unsigned long)(m.source_age_seconds / 60));
+    }
+    lv_obj_t *tag = lv_label_create(page);
+    lv_label_set_text(tag, label);
+    lv_label_set_long_mode(tag, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(tag, &rlcd_font_bold_14, 0);
+    lv_obj_set_style_text_align(tag, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(tag, 184, 5);
+    lv_obj_set_size(tag, 132, 21);
+    lv_obj_set_style_pad_top(tag, 2, 0);
+    lv_obj_set_style_border_color(tag, WHITE, 0);
+    lv_obj_set_style_border_width(tag, 2, 0);
+    lv_obj_set_style_bg_color(tag, WHITE, 0);
+    lv_obj_set_style_bg_opa(tag, m.source_live ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(tag, m.source_live ? WHITE : BLACK, 0);
+}
+
 void format_rate(char *out, size_t size, const char *label, float kb_per_second) {
     if (kb_per_second >= 1024.0f) snprintf(out, size, "%s %.1fM/S", label, kb_per_second / 1024.0f);
     else snprintf(out, size, "%s %.0fK/S", label, kb_per_second);
@@ -85,6 +113,7 @@ void MonitorUi::create(const MonitorModel &model) {
     create_processes(model);
     create_news(model);
     create_sound(model);
+    create_devices(model);
     for (int i = 0; i < kPageCount; ++i) if (i != current_page_) lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -98,6 +127,14 @@ void MonitorUi::create_overview(const MonitorModel &m) {
     lv_obj_t *bt = text(status, "BT --", 9, 5, &rlcd_font_bold_18);
     if (m.bluetooth_connected && m.bluetooth_rssi) lv_label_set_text_fmt(bt, "BT %d", m.bluetooth_rssi);
     else if (m.bluetooth_connected) lv_label_set_text(bt, "BT ON");
+    // The signal stays on the left; the source it belongs to sits beside it.
+    if (!m.source_name.empty()) {
+        lv_obj_t *source = text(status, "", 98, 8, &rlcd_font_bold_14);
+        lv_obj_set_width(source, 130);
+        lv_label_set_long_mode(source, LV_LABEL_LONG_CLIP);
+        if (m.source_live) lv_label_set_text(source, m.source_name.c_str());
+        else lv_label_set_text_fmt(source, "%s OFF", m.source_name.c_str());
+    }
     text(status, m.codex.active ? "CDX*" : "CDX", 236, 5, &rlcd_font_bold_18);
     text(status, m.claude.active ? "CLD*" : "CLD", 297, 5, &rlcd_font_bold_18);
     // On USB the cell voltage is held up by the charger, so a percentage there
@@ -146,7 +183,7 @@ void MonitorUi::create_overview(const MonitorModel &m) {
 }
 
 void MonitorUi::create_system(const MonitorModel &m) {
-    pages_[1] = lv_obj_create(lv_screen_active()); base(pages_[1], "HOST SYSTEM", 2);
+    pages_[1] = lv_obj_create(lv_screen_active()); base(pages_[1], "HOST SYSTEM", 2); source_tag(pages_[1], m);
     lv_obj_t *card = panel(pages_[1], 0, 32, 400, 202);
     char value[24];
     text(card, "CPU USAGE", 12, 10, &rlcd_font_bold_18);
@@ -179,11 +216,11 @@ void MonitorUi::create_system(const MonitorModel &m) {
     lv_obj_t *mode = text(net, m.usb_connected ? "FULL" : "POWER SAVE", 0, 11, &rlcd_font_bold_14);
     lv_obj_set_width(mode, 150); lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(mode, LV_ALIGN_RIGHT_MID, -12, 0);
-    footer(pages_[1], "BOOT: BACK", "KEY: NEXT");
+    footer(pages_[1], "BOOT: BACK", "HOLD KEY: SOURCE");
 }
 
 void MonitorUi::create_activity(const MonitorModel &m) {
-    pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENT USAGE", 3);
+    pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENT USAGE", 3); source_tag(pages_[2], m);
     lv_obj_t *total = panel(pages_[2], 0, 32, 400, 98);
     text(total, "TOKENS TODAY", 12, 8, &rlcd_font_bold_18);
     char token_total[24];
@@ -205,7 +242,7 @@ void MonitorUi::create_activity(const MonitorModel &m) {
 }
 
 void MonitorUi::create_processes(const MonitorModel &m) {
-    pages_[3] = lv_obj_create(lv_screen_active()); base(pages_[3], "TOP - BY CPU", 4);
+    pages_[3] = lv_obj_create(lv_screen_active()); base(pages_[3], "TOP - BY CPU", 4); source_tag(pages_[3], m);
     for (int i = 0; i < 4; ++i) {
         const ProcessUsage &p = m.processes[i];
         lv_obj_t *row = panel(pages_[3], 0, 32 + i * 60, 400, 58);
@@ -224,7 +261,7 @@ void MonitorUi::create_processes(const MonitorModel &m) {
 }
 
 void MonitorUi::create_news(const MonitorModel &m) {
-    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "TECH NEWS", 5);
+    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "TECH NEWS", 5); source_tag(pages_[4], m);
     for (int i = 0; i < 4; ++i) {
         int index = news_page_ * 4 + i;
         lv_obj_t *row = panel(pages_[4], 0, 32 + i * 60, 400, 58);
@@ -278,6 +315,47 @@ void MonitorUi::create_sound(const MonitorModel &m) {
     char span[28];
     snprintf(span, sizeof(span), "%u WINDOWS", static_cast<unsigned>(n.filled));
     footer(pages_[5], span, "BOOT: BACK");
+}
+
+void MonitorUi::create_devices(const MonitorModel &m) {
+    pages_[6] = lv_obj_create(lv_screen_active()); base(pages_[6], "DEVICES", 7);
+    int rows = 0;
+    int live = 0;
+    for (const SourceStatus &source : m.sources) {
+        if (!source.has_data) continue;
+        if (source.connected) ++live;
+        lv_obj_t *row = panel(pages_[6], 0, 32 + rows * 78, 400, 74);
+        if (source.shown) rule(row, 0, 0, 8, 74);
+        lv_obj_t *name = text(row, source.name.c_str(), 20, 6, &rlcd_font_bold_26);
+        lv_obj_set_width(name, 260); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
+        char detail[40];
+        if (source.connected && source.age_seconds < 120) {
+            snprintf(detail, sizeof(detail), "BT %d   UPDATED %luS", source.rssi, (unsigned long)source.age_seconds);
+        } else if (source.connected) {
+            snprintf(detail, sizeof(detail), "BT %d   UPDATED %luM", source.rssi, (unsigned long)(source.age_seconds / 60));
+        } else if (source.age_seconds >= 3600) {
+            snprintf(detail, sizeof(detail), "LAST SEEN %luH AGO", (unsigned long)(source.age_seconds / 3600));
+        } else {
+            snprintf(detail, sizeof(detail), "LAST SEEN %luM AGO", (unsigned long)(source.age_seconds / 60));
+        }
+        text(row, detail, 20, 44, &rlcd_font_bold_14);
+        const char *state_text = source.shown ? "SHOWING" : (source.connected ? "LIVE" : "OFFLINE");
+        lv_obj_t *state = text(row, state_text, 0, 0, &rlcd_font_bold_14, source.shown ? WHITE : BLACK);
+        lv_obj_set_style_pad_all(state, 5, 0);
+        if (source.shown) {
+            lv_obj_set_style_bg_color(state, BLACK, 0);
+            lv_obj_set_style_bg_opa(state, LV_OPA_COVER, 0);
+        } else if (source.connected) {
+            lv_obj_set_style_border_color(state, BLACK, 0);
+            lv_obj_set_style_border_width(state, 2, 0);
+        }
+        lv_obj_align(state, LV_ALIGN_RIGHT_MID, -10, 0);
+        ++rows;
+    }
+    if (!rows) text(pages_[6], "WAITING FOR A HOST", 12, 48, &rlcd_font_bold_18, WHITE);
+    char count[24];
+    snprintf(count, sizeof(count), "%d LIVE OF %d", live, rows);
+    footer(pages_[6], "HOLD KEY: SWITCH", count);
 }
 
 void MonitorUi::show_next() {

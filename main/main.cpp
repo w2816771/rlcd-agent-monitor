@@ -89,6 +89,18 @@ void button_task(void *) {
 void lvgl_task(void *) {
     bool last_connected = false;
     int64_t last_sensor_update = 0;
+    uint32_t last_stale_minutes = 0;
+    auto apply_sources = [](MonitorModel &target) {
+        target.sources = monitor_ble_sources();
+        target.source_live = false;
+        target.source_age_seconds = 0;
+        for (const SourceStatus &source : target.sources) {
+            if (!source.shown) continue;
+            target.source_name = source.name;
+            target.source_live = source.connected;
+            target.source_age_seconds = source.age_seconds;
+        }
+    };
     while (true) {
         // The page reported is the one on screen when the button went down, so
         // the host can act on what the user was looking at.
@@ -106,9 +118,18 @@ void lvgl_task(void *) {
             ui.show_home();
         }
         if (long_press_requested.exchange(false)) {
-            monitor_ble_notify_button(2, page);
-            ui.handle_long_press(model);
+            // KEY held flips headlines on the news page and switches the shown
+            // source everywhere else. A switch is not forwarded as a button
+            // event, so a command mapped to KEY held cannot fire on every switch.
+            if (ui.current_page() == 4) {
+                monitor_ble_notify_button(2, page);
+                ui.handle_long_press(model);
+            } else {
+                monitor_ble_show_next_source();
+            }
         }
+        monitor_ble_flush_events();
+
         // Full function while a USB host is attached, power save on battery.
         // The same connection already holds light sleep off, so the mode only
         // has to decide how often the board wakes to do work.
@@ -116,6 +137,7 @@ void lvgl_task(void *) {
         // The sound page is a live graph, so while it is on screen and the
         // board is not on battery the loop refreshes far more often.
         const bool watching_sound = ui.current_page() == 5;
+        const bool watching_devices = ui.current_page() == 6;
         const int64_t sensor_period = usb ? (watching_sound ? 3000000 : 10000000) : 60000000;
         audio_meter_set_period_ms(usb ? 2000 : 30000);
         const uint32_t wait_floor = usb ? 20 : 50;
@@ -127,6 +149,7 @@ void lvgl_task(void *) {
             model.bluetooth_connected = monitor_ble_connected();
             model.bluetooth_rssi = monitor_ble_rssi();
             model.usb_connected = usb;
+            apply_sources(model);
             const BoardSensorReadings sensors = board_sensors_read();
             if (sensors.battery_valid) model.board_battery_percent = sensors.battery_percent;
             if (sensors.climate_valid) {
@@ -141,6 +164,7 @@ void lvgl_task(void *) {
             model.bluetooth_connected = monitor_ble_connected();
             model.bluetooth_rssi = monitor_ble_rssi();
             model.usb_connected = usb;
+            apply_sources(model);
             ui.update(model);
         }
         const int64_t now = esp_timer_get_time();
@@ -162,6 +186,12 @@ void lvgl_task(void *) {
             if (noise && (noise_delta <= -3 || noise_delta >= 3)) { model.noise_db = noise; changed = true; }
             model.noise = audio_meter_levels();
             if (watching_sound) changed = true;
+            apply_sources(model);
+            // The devices page lists live signal and update age, and a stale
+            // header counts up in minutes, so both need periodic redraws.
+            const uint32_t stale_minutes = model.source_live ? 0 : model.source_age_seconds / 60;
+            if (watching_devices || stale_minutes != last_stale_minutes) changed = true;
+            last_stale_minutes = stale_minutes;
             if (changed) ui.update(model);
         }
         last_connected = monitor_ble_connected();

@@ -2,7 +2,10 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -68,6 +71,7 @@ struct Snapshot {
     net_down: f32,
     net_up: f32,
     noise_offset: f32,
+    source: String,
     headlines: Vec<String>,
     headline_ages: Vec<String>,
 }
@@ -91,6 +95,10 @@ struct Config {
     buttons: ButtonConfig,
     // dB added to the measured microphone level to reach an approximate SPL.
     noise_offset_db: f32,
+    // Name shown on the board. Empty uses this machine's host name.
+    device_name: String,
+    // How often to send while the board is showing another machine.
+    hidden_update_seconds: u64,
 }
 
 impl Default for Config {
@@ -102,6 +110,8 @@ impl Default for Config {
             news: NewsConfig::default(),
             buttons: ButtonConfig::default(),
             noise_offset_db: 87.0,
+            device_name: String::new(),
+            hidden_update_seconds: 300,
         }
     }
 }
@@ -200,6 +210,9 @@ async fn main() -> Result<()> {
         match find_and_connect(&adapter, characteristic_uuid, button_uuid).await {
             Ok((peripheral, characteristic, button)) => {
                 println!("Connected to {DEVICE_NAME}");
+                // Assume shown until the board says otherwise, so the first
+                // snapshot after connecting is never delayed.
+                SHOWN.store(true, Ordering::Relaxed);
                 let listener = button.map(|b| spawn_button_listener(peripheral.clone(), b));
                 loop {
                     let still_connected =
@@ -224,7 +237,8 @@ async fn main() -> Result<()> {
                         *shared = next_config.buttons.clone();
                     }
                     config = next_config;
-                    let snapshot = collect_snapshot(&online, &mut net, config.noise_offset_db);
+                    let snapshot =
+                        collect_snapshot(&online, &mut net, config.noise_offset_db, &source_name(&config));
                     let json = serde_json::to_vec(&snapshot)?;
                     message_id = message_id.wrapping_add(1);
                     let sent = timeout(
@@ -248,7 +262,18 @@ async fn main() -> Result<()> {
                         Local::now().second(),
                         json.len()
                     );
-                    sleep(Duration::from_secs(config.update_seconds.max(5))).await;
+                    // A machine the board is not showing only has to stay fresh
+                    // enough to switch to, and the board wakes it the moment it
+                    // becomes the shown one.
+                    let interval = if SHOWN.load(Ordering::Relaxed) {
+                        config.update_seconds.max(5)
+                    } else {
+                        config.hidden_update_seconds.max(config.update_seconds.max(5))
+                    };
+                    tokio::select! {
+                        _ = sleep(Duration::from_secs(interval)) => {}
+                        _ = shown_wake().notified() => {}
+                    }
                 }
                 if let Some(listener) = listener {
                     listener.abort();
@@ -341,7 +366,12 @@ async fn send_snapshot(
     Ok(())
 }
 
-fn collect_snapshot(online: &OnlineData, net: &mut NetSampler, noise_offset: f32) -> Snapshot {
+fn collect_snapshot(
+    online: &OnlineData,
+    net: &mut NetSampler,
+    noise_offset: f32,
+    source: &str,
+) -> Snapshot {
     let (processes, process_count, cpu, codex_active, claude_active) = process_usage();
     let (ram, ram_used_gb, ram_total_gb) = memory_usage();
     let (swap, swap_used_gb) = swap_usage();
@@ -371,9 +401,22 @@ fn collect_snapshot(online: &OnlineData, net: &mut NetSampler, noise_offset: f32
         net_down,
         net_up,
         noise_offset,
+        source: source.to_string(),
         headlines: online.headlines.clone(),
         headline_ages: online.headline_ages.clone(),
     }
+}
+
+const EVENT_SHOWN: u8 = 5;
+const EVENT_HIDDEN: u8 = 6;
+
+// Whether the board is currently showing this machine. It says so over the
+// button characteristic whenever the shown source changes.
+static SHOWN: AtomicBool = AtomicBool::new(true);
+
+fn shown_wake() -> &'static tokio::sync::Notify {
+    static WAKE: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    WAKE.get_or_init(tokio::sync::Notify::new)
 }
 
 static BUTTON_COMMANDS: OnceLock<Mutex<ButtonConfig>> = OnceLock::new();
@@ -394,8 +437,7 @@ fn run_button_command(event: u8, page: u8) {
     }
     println!("Button {event} on page {page} runs: {command}");
     tokio::task::spawn_blocking(move || {
-        let _ = Command::new("sh")
-            .arg("-c")
+        let _ = shell_command()
             .arg(&command)
             .env("RLCD_EVENT", event.to_string())
             .env("RLCD_PAGE", page.to_string())
@@ -423,7 +465,17 @@ fn spawn_button_listener(
             if note.uuid != characteristic.uuid || note.value.len() < 4 || note.value[0] != 1 {
                 continue;
             }
-            run_button_command(note.value[2], note.value[3]);
+            match note.value[2] {
+                // Only a change from hidden needs an early send; a host that is
+                // already shown would otherwise resend the snapshot it just sent.
+                EVENT_SHOWN => {
+                    if !SHOWN.swap(true, Ordering::Relaxed) {
+                        shown_wake().notify_one();
+                    }
+                }
+                EVENT_HIDDEN => SHOWN.store(false, Ordering::Relaxed),
+                event => run_button_command(event, note.value[3]),
+            }
         }
     })
 }
@@ -457,6 +509,7 @@ impl NetSampler {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn interface_bytes() -> (u64, u64) {
     let mut down = 0;
     let mut up = 0;
@@ -484,9 +537,10 @@ fn command_output(program: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
 fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
     let output = command_output("ps", &["-axo", "pcpu=,rss=,comm="]);
-    let mut values: Vec<_> = output
+    let values: Vec<_> = output
         .lines()
         .filter_map(|line| {
             let mut fields = line
@@ -506,6 +560,13 @@ fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
         .collect();
     let core_count = std::thread::available_parallelism().map_or(1, usize::from) as f32;
     let cpu = (values.iter().map(|p| p.cpu).sum::<f32>() / core_count).clamp(0.0, 100.0) as u8;
+    summarize_processes(values, cpu)
+}
+
+fn summarize_processes(
+    mut values: Vec<ProcessUsage>,
+    cpu: u8,
+) -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
     let codex_active = any_process(&values, &["codex", "chatgpt"]);
     let claude_active = any_process(&values, &["claude"]);
     let process_count = values.len().min(u16::MAX as usize) as u16;
@@ -521,6 +582,7 @@ fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
     (values, process_count, cpu, codex_active, claude_active)
 }
 
+#[cfg(target_os = "macos")]
 fn memory_usage() -> (u8, f32, f32) {
     let text = command_output("memory_pressure", &[]);
     let percent = text
@@ -536,6 +598,7 @@ fn memory_usage() -> (u8, f32, f32) {
     (percent, total_gb * percent as f32 / 100.0, total_gb)
 }
 
+#[cfg(target_os = "macos")]
 fn swap_usage() -> (u8, f32) {
     let text = command_output("sysctl", &["-n", "vm.swapusage"]);
     let number = |name: &str| {
@@ -554,6 +617,7 @@ fn swap_usage() -> (u8, f32) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn battery_percent() -> u8 {
     let text = command_output("pmset", &["-g", "batt"]);
     text.split_whitespace()
@@ -562,6 +626,7 @@ fn battery_percent() -> u8 {
         .unwrap_or(0)
 }
 
+#[cfg(target_os = "macos")]
 fn battery_power_watts() -> f32 {
     let text = command_output("ioreg", &["-rn", "AppleSmartBattery", "-l"]);
     let field = |name: &str| -> Option<u64> {
@@ -750,7 +815,7 @@ fn claude_ccusage_windows() -> (u64, u64) {
         let binary = if Path::new("/opt/homebrew/bin/npx").exists() {
             "/opt/homebrew/bin/npx"
         } else {
-            "npx"
+            if cfg!(windows) { "npx.cmd" } else { "npx" }
         };
         command_output(binary, args)
     };
@@ -939,8 +1004,140 @@ fn ascii(text: &str, limit: usize) -> String {
         .collect()
 }
 
+fn source_name(config: &Config) -> String {
+    let name = if config.device_name.trim().is_empty() {
+        sysinfo::System::host_name().unwrap_or_else(|| "HOST".into())
+    } else {
+        config.device_name.clone()
+    };
+    ascii(&name.trim_end_matches(".local").to_uppercase(), 16)
+}
+
+fn shell_command() -> Command {
+    let (program, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let mut command = Command::new(program);
+    command.arg(flag);
+    command
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
+    portable::process_usage()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_usage() -> (u8, f32, f32) {
+    portable::memory_usage()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swap_usage() -> (u8, f32) {
+    portable::swap_usage()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn interface_bytes() -> (u64, u64) {
+    portable::interface_bytes()
+}
+
+// A desktop PC usually has no battery, and the laptop readings above come from
+// macOS-only tools, so these report nothing elsewhere.
+#[cfg(not(target_os = "macos"))]
+fn battery_percent() -> u8 {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn battery_power_watts() -> f32 {
+    0.0
+}
+
+// Collection for machines without the macOS tools the functions above shell out
+// to, such as the Windows PC. It is compiled on every platform so a Mac build
+// still type-checks it.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod portable {
+    use super::{ProcessUsage, ascii, summarize_processes};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use sysinfo::{Networks, ProcessesToUpdate, System};
+
+    // CPU usage is the difference between two refreshes, so the System has to
+    // persist across snapshots rather than being rebuilt each time.
+    fn system() -> MutexGuard<'static, System> {
+        static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
+        SYSTEM
+            .get_or_init(|| Mutex::new(System::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
+        let mut system = system();
+        system.refresh_cpu_usage();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        let values = system
+            .processes()
+            .values()
+            .map(|process| ProcessUsage {
+                name: ascii(&process.name().to_string_lossy(), 20),
+                // Measured against a single core, matching ps on macOS.
+                cpu: process.cpu_usage(),
+                ram_mb: (process.memory() / 1_048_576) as u32,
+            })
+            .collect();
+        let cpu = system.global_cpu_usage().clamp(0.0, 100.0) as u8;
+        summarize_processes(values, cpu)
+    }
+
+    pub fn memory_usage() -> (u8, f32, f32) {
+        let mut system = system();
+        system.refresh_memory();
+        let total = system.total_memory() as f32;
+        let used = system.used_memory() as f32;
+        let percent = if total > 0.0 {
+            (used * 100.0 / total).clamp(0.0, 100.0) as u8
+        } else {
+            0
+        };
+        (percent, used / 1_073_741_824.0, total / 1_073_741_824.0)
+    }
+
+    pub fn swap_usage() -> (u8, f32) {
+        let mut system = system();
+        system.refresh_memory();
+        let total = system.total_swap() as f32;
+        let used = system.used_swap() as f32;
+        if total <= 0.0 {
+            return (0, 0.0);
+        }
+        (
+            (used * 100.0 / total).clamp(0.0, 100.0) as u8,
+            used / 1_073_741_824.0,
+        )
+    }
+
+    pub fn interface_bytes() -> (u64, u64) {
+        static NETWORKS: OnceLock<Mutex<Networks>> = OnceLock::new();
+        let mut networks = NETWORKS
+            .get_or_init(|| Mutex::new(Networks::new_with_refreshed_list()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        networks.refresh(true);
+        networks
+            .list()
+            .iter()
+            .filter(|(name, _)| !name.to_lowercase().contains("loopback"))
+            .fold((0, 0), |(down, up), (_, data)| {
+                (down + data.total_received(), up + data.total_transmitted())
+            })
+    }
+}
+
 fn home() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

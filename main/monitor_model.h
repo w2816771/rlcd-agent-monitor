@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -21,6 +22,18 @@ struct ProcessUsage {
     std::string name;
     float cpu_percent;
     uint16_t ram_mb;
+};
+
+constexpr std::size_t kMaxSources = 3;
+
+// One connected or remembered host, for the devices page and the header tag.
+struct SourceStatus {
+    bool connected = false;
+    bool shown = false;
+    bool has_data = false;
+    int8_t rssi = 0;
+    uint32_t age_seconds = 0;
+    std::string name;
 };
 
 struct MonitorModel {
@@ -56,6 +69,11 @@ struct MonitorModel {
     // Local, not from the host. Trailing so the demo model stays positional.
     AudioLevels noise{};
     float noise_offset_db = 85.0f;
+    // Which host this snapshot came from, and every slot for the devices page.
+    std::string source_name;
+    bool source_live = false;
+    uint32_t source_age_seconds = 0;
+    std::array<SourceStatus, kMaxSources> sources{};
 };
 
 MonitorModel monitor_demo_model();

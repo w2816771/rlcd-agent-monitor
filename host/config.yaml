@@ -30,3 +30,9 @@ buttons:
 # Added to the measured microphone level to reach an approximate SPL. Raise or
 # lower it until the board agrees with a reference meter; no reflash needed.
 noise_offset_db: 87
+
+# Name shown on the board for this machine. Empty uses the host name.
+device_name: "MAC"
+# How often to send while the board is showing a different machine. The board
+# wakes this one immediately when you switch to it.
+hidden_update_seconds: 300

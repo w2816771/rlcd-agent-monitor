@@ -4,7 +4,7 @@
 
 class MonitorUi {
 public:
-    static constexpr int kPageCount = 6;
+    static constexpr int kPageCount = 7;
     void create(const MonitorModel &model);
     void show_next();
     void show_previous();
@@ -23,4 +23,5 @@ private:
     void create_processes(const MonitorModel &model);
     void create_news(const MonitorModel &model);
     void create_sound(const MonitorModel &model);
+    void create_devices(const MonitorModel &model);
 };
