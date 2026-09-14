@@ -48,14 +48,14 @@ void flush(lv_display_t *disp, const lv_area_t *area, uint8_t *pixels) {
             display.RLCD_SetPixel(x, y, luminance < 128 ? ColorBlack : ColorWhite);
         }
     }
-    // Only the changed band reaches the panel, and an unchanged frame sends
-    // nothing at all, which is the common case when a label was rebuilt with
-    // the same text.
-    display.RLCD_DisplayChanged();
-    // RLCD_SetLowPower(true) belongs here, but 0x39 is read from the MIPI idle
-    // mode convention rather than a datasheet to hand, so it is enabled only
-    // once the layout above is confirmed good on the panel. One change at a
-    // time is the difference between a bug and a mystery.
+    // Full frame every time. RLCD_DisplayChanged sends only the changed window
+    // and is kept in the driver, but using it here made the panel glitch after
+    // a page had been on screen for a while: either the window address
+    // arithmetic is subtly wrong, or this panel needs the periodic rewrite that
+    // skipping an unchanged frame takes away. Both need a datasheet to settle,
+    // and the saving was one SPI transfer of about 6 ms against a BLE radio
+    // that wakes twice a second, so correctness wins until then.
+    display.RLCD_Display();
     lv_display_flush_ready(disp);
 }
 
