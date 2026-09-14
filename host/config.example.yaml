@@ -1,3 +1,7 @@
+# Template. Copy to config.yaml and edit that; config.yaml is not tracked by
+# git, so your own coordinates and button commands stay off GitHub.
+#   Windows: copy host\config.example.yaml host\config.yaml
+#   macOS:   cp host/config.example.yaml host/config.yaml
 # Changes are reloaded automatically by the running host service.
 update_seconds: 60
 online_refresh_minutes: 10

@@ -8,3 +8,4 @@ host/target/
 host/*.out
 host/*.err
 host/*.log
+host/config.yaml

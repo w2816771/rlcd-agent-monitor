@@ -23,6 +23,20 @@ use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+mod tray;
+
+// The tray icon is Windows only; elsewhere these calls compile away and the
+// launchd service already exposes the log.
+#[cfg(windows)]
+fn tray_status(text: impl Into<String>) { tray::set_status(text); }
+#[cfg(not(windows))]
+fn tray_status(_text: impl Into<String>) {}
+#[cfg(windows)]
+fn tray_quit_requested() -> bool { tray::quit_requested() }
+#[cfg(not(windows))]
+fn tray_quit_requested() -> bool { false }
+
 const DEVICE_NAME: &str = "RLCD Monitor";
 const TELEMETRY_UUID: &str = "7a1e0002-7e57-4d6d-8a1b-2c3d4e5f6071";
 const BUTTON_UUID: &str = "7a1e0003-7e57-4d6d-8a1b-2c3d4e5f6071";
@@ -212,6 +226,18 @@ fn load_config() -> Config {
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("RLCD host monitor starting");
+    // Its own thread: the tray needs a Windows message loop, which cannot share
+    // one with the async runtime.
+    #[cfg(windows)]
+    {
+        let root = env::var_os("RLCD_CONFIG")
+            .map(PathBuf::from)
+            .and_then(|path| path.parent().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let log = root.join("rlcd-host.log");
+        let config = root.join("config.yaml");
+        std::thread::spawn(move || tray::run(log, config));
+    }
     let adapter = bluetooth_adapter().await?;
     let characteristic_uuid = Uuid::parse_str(TELEMETRY_UUID)?;
     let button_uuid = Uuid::parse_str(BUTTON_UUID)?;
@@ -225,11 +251,17 @@ async fn main() -> Result<()> {
         match find_and_connect(&adapter, characteristic_uuid, button_uuid).await {
             Ok((peripheral, characteristic, button)) => {
                 println!("Connected to {DEVICE_NAME}");
+                tray_status("Connected");
                 // Assume shown until the board says otherwise, so the first
                 // snapshot after connecting is never delayed.
                 SHOWN.store(true, Ordering::Relaxed);
                 let listener = button.map(|b| spawn_button_listener(peripheral.clone(), b));
                 loop {
+                    if tray_quit_requested() {
+                        println!("Quit requested from the tray");
+                        let _ = timeout(Duration::from_secs(3), peripheral.disconnect()).await;
+                        return Ok(());
+                    }
                     let still_connected =
                         timeout(Duration::from_secs(2), peripheral.is_connected())
                             .await
@@ -238,6 +270,7 @@ async fn main() -> Result<()> {
                             .unwrap_or(false);
                     if !still_connected {
                         println!("Board disconnected; scanning again");
+                        tray_status("Board disconnected, scanning");
                         break;
                     }
                     let next_config = load_config();
@@ -270,6 +303,12 @@ async fn main() -> Result<()> {
                         let _ = timeout(Duration::from_secs(3), peripheral.disconnect()).await;
                         break;
                     }
+                    tray_status(format!(
+                        "Updated {:02}:{:02}:{:02}",
+                        Local::now().hour(),
+                        Local::now().minute(),
+                        Local::now().second()
+                    ));
                     println!(
                         "Updated {:02}:{:02}:{:02} ({} bytes)",
                         Local::now().hour(),
@@ -301,6 +340,7 @@ async fn main() -> Result<()> {
                 }
             }
             Err(error) => {
+                tray_status("Searching for the board");
                 eprintln!("{error:#}; retrying in 3 seconds");
                 sleep(Duration::from_secs(3)).await;
             }

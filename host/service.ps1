@@ -8,10 +8,18 @@ $ErrorActionPreference = "Stop"
 $task = "RLCD Monitor Host"
 $exe = Join-Path $PSScriptRoot "target\release\rlcd-host.exe"
 $log = Join-Path $PSScriptRoot "rlcd-host.log"
+$config = Join-Path $PSScriptRoot "config.yaml"
+$template = Join-Path $PSScriptRoot "config.example.yaml"
 
 switch ($Action) {
     "install" {
         if (-not (Test-Path $exe)) { throw "Missing $exe. Run cargo build --release first." }
+        # A fresh checkout has no config.yaml, since it is not tracked. Seed it
+        # from the template rather than silently running on built in defaults.
+        if (-not (Test-Path $config)) {
+            Copy-Item $template $config
+            "Created $config from the template. Edit it for your location."
+        }
         # The collector reads config.yaml from its working directory.
         # Run through cmd so the output lands in a file. A logon task has no
         # console, so without this there is no telling a working collector

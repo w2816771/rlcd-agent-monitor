@@ -413,6 +413,10 @@ The host reads `config.yaml` from its working directory, or from the path in
 the `RLCD_CONFIG` environment variable, on every loop iteration. Missing keys
 take the defaults below.
 
+`config.yaml` is **not tracked by git**, so coordinates and button commands
+stay local. `config.example.yaml` is the template to copy; `service.ps1
+install` copies it for you when no `config.yaml` exists yet.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `device_name` | empty, which uses the host name | `source` sent to the board; set `PC` on the PC |
@@ -491,6 +495,13 @@ To start it at logon, run once:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\service.ps1 install
 ```
+
+On Windows the collector also shows a notification area icon. It sits in the
+hidden icons overflow until dragged out; its tooltip carries the time of the
+last successful send, and its menu opens the log, the config, and the folder,
+or stops the collector. The icon is Windows only, since the launchd service
+already exposes the log on macOS, and a tray that fails to appear is reported
+and then ignored rather than stopping collection.
 
 `service.ps1` also accepts `uninstall`, `restart`, `status`, and `logs`. The
 task runs the collector through `cmd` so its output appends to
