@@ -135,6 +135,25 @@ from there once overflowed its stack and reset the board. Queue state under
 dump is kept in the `coredump` partition; read it with `./idf.sh -p <port>
 coredump-info`, since panic output otherwise goes only to UART0.
 
+## Two display optimisations that did not survive contact
+
+Both are still in `components/rlcd/display_bsp.cpp`, and neither is called.
+Reintroducing either without the ST7305 datasheet is likely to repeat the same
+result.
+
+- `RLCD_DisplayChanged()` writes only the changed window instead of all 15,000
+  bytes. Used from `flush`, the panel glitched once a page had been on screen a
+  while. Either the page and column address arithmetic is subtly wrong, or the
+  panel needs the periodic rewrite that skipping an unchanged frame removes.
+- `RLCD_SetLowPower(true)` idles the panel at its low refresh rate between
+  writes. It washed the picture out to pale grey: the drive waveform at that
+  rate does not hold contrast on this reflective panel.
+
+Neither was worth much. The full frame write is one 6 ms SPI transfer against a
+BLE radio that wakes twice a second. If redraws need to be cheaper, the target
+is `MonitorUi::update`, which deletes and rebuilds every page on every update;
+setting label text in place would cut the LVGL render, which is the real cost.
+
 ## Conventions
 
 The existing code is deliberately comment-light and uses full words for names.
