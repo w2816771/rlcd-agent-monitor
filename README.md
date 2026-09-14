@@ -1,77 +1,105 @@
 # RLCD Agent Monitor
 
-ESP-IDF firmware and a Rust macOS companion for the Waveshare
-ESP32-S3-RLCD-4.2. It renders five 400x300 landscape pages for time and room
-conditions, host system, Codex/Claude usage, top processes, and Google News.
-KEY advances to the next page and BOOT goes back. Hold BOOT to return home;
-hold KEY on News to switch between four-item headline pages. The PWR button is
-hardware power control and is not an application input.
+A desk monitor built on the Waveshare ESP32-S3-RLCD-4.2, a 400 by 300
+reflective monochrome display board. The board shows a computer's system load,
+network, Codex and Claude usage, top processes, news, weather, room conditions,
+and sound level. A small Rust program on each computer, the host, sends that
+data over Bluetooth Low Energy.
 
-## Toolchain and build
+## Features
 
-ESP-IDF 5.5.1 is installed at `/Users/a58/esp/esp-idf-v5.5.1`. The project-local
-wrapper activates that environment automatically:
+- Seven pages: overview, host system, agent usage, top processes, news, sound,
+  and devices.
+- Up to three computers connected at once, such as a Mac and a PC, with the
+  shown one switchable from the board and remembered across reboots.
+- Two-way Bluetooth. Board buttons can run commands on the shown computer.
+- Onboard temperature and humidity, a calibrated sound level meter with
+  history, and battery level.
+- Power save mode on battery with automatic light sleep, and full function mode
+  while plugged into a computer's USB port.
 
-```sh
+## Buttons
+
+| Button | Press | Hold |
+|---|---|---|
+| KEY | next page | switch source; on the news page, next headlines |
+| BOOT | previous page | back to the overview |
+| PWR | power on | power off |
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `main/` | firmware application: pages, Bluetooth, sensors, sound meter |
+| `components/rlcd/` | display driver, derived from Waveshare's Apache-2.0 example |
+| `host/` | Rust host for macOS and Windows, its config, and startup scripts |
+| `docs/host-api.md` | full host contract: Bluetooth protocol, snapshot schema, requirements |
+| `CLAUDE.md` | architecture notes and engineering rules for this codebase |
+
+## Firmware
+
+Requires ESP-IDF 5.5.1. The wrapper script uses `~/esp/esp-idf-v5.5.1`, or the
+checkout named by `IDF_PATH`. The first build downloads LVGL through the ESP-IDF
+Component Manager.
+
+```bash
 ./idf.sh build
-./idf.sh -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-Alternatively, activate ESP-IDF in the current shell with
-`source /Users/a58/esp/esp-idf-v5.5.1/export.sh`, then use `idf.py` normally.
-The first build downloads LVGL through the ESP-IDF Component Manager. The
-display driver and pin mapping are based on Waveshare's Apache-2.0 ESP-IDF
-example for this board.
+The board uses its native USB port. Flash with the USB reset method, because the
+default reset method cannot put this chip into download mode while the firmware
+is running:
 
-## Current milestone
+```bash
+cd build && esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX --before usb_reset --after hard_reset write_flash @flash_args
+```
 
-- ST7305 display initialization and landscape framebuffer
-- Five big-type LVGL pages using native 1-bit fonts
-- KEY/BOOT forward and back navigation, long-press Home and News paging
-- NimBLE GATT peripheral named `RLCD Monitor`
-- Chunked, versioned BLE telemetry protocol
-- Rust macOS collector with automatic BLE reconnect
-- Live CPU/RAM percentage bars, swap, per-process CPU/RAM, Codex, and Claude statistics
-- Codex 5-hour/weekly quota plus cached `ccusage` Claude 5-hour/weekly totals
-- Onboard SHTC3 temperature/humidity, ES7210 microphone level, and ADC battery readings
-- Weather from Open-Meteo and eight headlines from Google News RSS
+If the port does not appear at all, hold BOOT, click PWR, keep holding BOOT for a
+second, then flash.
 
-## Host companion
+Crash output goes only to the unconnected UART0, so the firmware saves a core
+dump to flash instead. Read it back with the ELF that matches the flashed build:
 
-Rust is installed through Homebrew. Build or run the collector with:
+```bash
+./idf.sh -p /dev/cu.usbmodemXXXX coredump-info
+```
 
-```sh
-cd host
+## Host
+
+On macOS, from `host/`:
+
+```bash
 cargo build --release
-cargo run --release
 ```
 
-Edit `host/config.yaml` to configure location, refresh rates, Google News topic
-and locale, or a custom RSS URL. The running service notices changes without a
-rebuild. CPU temperature and GPU utilization are shown as unavailable when
-macOS does not expose them.
-The companion invokes `ccusage` through `npx` at most once every five minutes;
-Codex quota percentages come directly from its local rate-limit records.
-
-To run the collector automatically after macOS login:
-
-```sh
-cd host
-./service.sh install
-./service.sh status
-./service.sh logs
+```bash
+./target/release/rlcd-host
 ```
 
-Use `./service.sh uninstall` to remove it. macOS may request Bluetooth access
-the first time the collector starts.
+To start it at login, run `./service.sh install`, then use `./service.sh logs`
+to follow it. macOS asks for Bluetooth permission on first run.
 
-## BLE protocol
+On Windows, follow `docs/host-api.md`, section 11, and install the logon task
+with `service.ps1`.
 
-Service UUID: `7a1e0001-7e57-4d6d-8a1b-2c3d4e5f6071`
+Every computer must set a different `device_name` in `host/config.yaml`, such as
+`MAC` and `PC`. The config is re-read continuously, so edits take effect without
+a restart. It also sets weather location, news topic, update intervals, button
+commands, and the microphone calibration `noise_offset_db`.
 
-Telemetry characteristic: `7a1e0002-7e57-4d6d-8a1b-2c3d4e5f6071`
+## Power behavior
 
-Each write starts with four bytes: protocol version, message ID, zero-based
-chunk index, and total chunk count. The remaining bytes are one segment of a
-UTF-8 JSON snapshot. Version 1 uses 16 payload bytes per chunk so it works with
-the minimum BLE ATT MTU.
+- Plugged into a computer, the board runs in full function mode, polls often,
+  and keeps USB alive for flashing. The battery corner reads `USB`, because the
+  charger holds the cell voltage near full.
+- On battery, it enters power save mode with automatic light sleep and slower
+  polling.
+- A computer that is not being shown sends every five minutes instead of every
+  minute, and is woken immediately when you switch to it.
+
+## Status and known limitations
+
+- The Windows host compiles, but has not yet been run on Windows.
+- Switching between two real computers has not been tested with two machines.
+- The Bluetooth characteristics require no pairing.
+- The card slot, speaker, and real-time clock chip on the board are not used yet.

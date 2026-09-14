@@ -18,7 +18,7 @@ Any field added on one side must be added on the other or it is silently dropped
 
 ## Build and run
 
-Firmware (the wrapper sources ESP-IDF from `/Users/a58/esp/esp-idf-v5.5.1`):
+Firmware (the wrapper sources ESP-IDF from `IDF_PATH`, or `~/esp/esp-idf-v5.5.1`):
 
 ```bash
 ./idf.sh build

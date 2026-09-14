@@ -9,7 +9,8 @@ domain="gui/$(id -u)"
 case "${1:-status}" in
   install)
     mkdir -p "${HOME}/Library/LaunchAgents"
-    cp "${source_plist}" "${installed_plist}"
+    # The plist names paths as __HOST_DIR__ so the project can live anywhere.
+    sed "s|__HOST_DIR__|${0:A:h}|g" "${source_plist}" > "${installed_plist}"
     launchctl bootout "${domain}" "${installed_plist}" 2>/dev/null || true
     launchctl bootstrap "${domain}" "${installed_plist}"
     launchctl kickstart -k "${domain}/${label}"
