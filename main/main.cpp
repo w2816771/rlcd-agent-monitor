@@ -130,7 +130,8 @@ void lvgl_task(void *) {
             // KEY held flips headlines on the news page and switches the shown
             // source everywhere else. A switch is not forwarded as a button
             // event, so a command mapped to KEY held cannot fire on every switch.
-            if (ui.current_page() == MonitorUi::kPageNews ||
+            if (ui.current_page() == MonitorUi::kPageSystem ||
+                ui.current_page() == MonitorUi::kPageNews ||
                 ui.current_page() == MonitorUi::kPageDebug) {
                 monitor_ble_notify_button(2, page);
                 ui.handle_long_press(model);

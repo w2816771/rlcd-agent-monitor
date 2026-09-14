@@ -22,7 +22,20 @@ struct ProcessUsage {
     std::string name;
     float cpu_percent;
     uint16_t ram_mb;
+    // Processor time plus disk traffic, not watts. The host cannot measure per
+    // process power without elevated access, so this is a composite of the kind
+    // Task Manager and Activity Monitor show.
+    float impact = 0.0f;
 };
+
+// How the process rows are ordered. The host sends enough candidates that any
+// of these is correct without asking it for a different list.
+enum class ProcessSort : uint8_t { Cpu = 0, Ram = 1, Impact = 2 };
+constexpr uint8_t kProcessSortCount = 3;
+
+// The host sends the leaders of every ordering, deduplicated, so the set is
+// larger than the rows on screen.
+constexpr std::size_t kMaxProcesses = 12;
 
 constexpr std::size_t kMaxSources = 3;
 
@@ -63,7 +76,9 @@ struct MonitorModel {
     std::string region_text;
     AgentUsage codex;
     AgentUsage claude;
-    std::array<ProcessUsage, 5> processes;
+    std::array<ProcessUsage, kMaxProcesses> processes;
+    // How many of those the host actually sent.
+    std::size_t process_rows = 0;
     std::array<std::string, 8> headlines;
     std::array<std::string, 8> headline_ages;
     // Local, not from the host. Trailing so the demo model stays positional.

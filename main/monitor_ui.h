@@ -8,6 +8,7 @@ public:
     // on the system page and the sound history on the overview, because a page
     // costs button presses on a two button board.
     static constexpr int kPageCount = 6;
+    static constexpr int kPageSystem = 1;
     static constexpr int kPageNews = 3;
     static constexpr int kPageDevices = 4;
     static constexpr int kPageDebug = 5;
@@ -25,6 +26,8 @@ private:
     int news_page_ = 0;
     // Index of the oldest log line on screen, so KEY held can page through.
     int debug_scroll_ = 0;
+    // Which ordering the process rows use. KEY held cycles it.
+    ProcessSort process_sort_ = ProcessSort::Cpu;
     void create_overview(const MonitorModel &model);
     void create_system(const MonitorModel &model);
     void create_activity(const MonitorModel &model);

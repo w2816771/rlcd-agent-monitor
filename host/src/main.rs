@@ -44,7 +44,22 @@ struct ProcessUsage {
     name: String,
     cpu: f32,
     ram_mb: u32,
+    // Not watts. Neither platform exposes per process power without elevated
+    // access, so this is the same kind of composite Task Manager and Activity
+    // Monitor show: processor time plus the disk traffic that keeps a drive and
+    // the bus awake. The board labels it IMPACT for that reason.
+    impact: f32,
 }
+
+// One megabyte per second of disk traffic counts for this much processor time.
+// Pure guesswork calibrated to taste rather than to a power meter, which is why
+// it sits here as a named constant instead of buried in the arithmetic.
+const DISK_IMPACT_PER_MB: f32 = 2.0;
+
+// The board sorts this set itself, so it has to contain every process that
+// could top any of the three orderings, not just the busiest by processor.
+const PROCESSES_PER_METRIC: usize = 5;
+const PROCESSES_SENT: usize = 12;
 
 #[derive(Serialize)]
 struct Snapshot {
@@ -576,9 +591,13 @@ fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
             let path = fields.next()?.trim();
             let name = Path::new(path).file_name()?.to_string_lossy();
             Some(ProcessUsage {
-                name: ascii(&name, 20),
+                name: ascii(&name, 20),  // ps already reports a plain name here.
                 cpu,
                 ram_mb,
+                // ps reports no disk traffic, so on macOS the impact ordering
+                // collapses into the processor ordering until something richer
+                // than ps is used here.
+                impact: cpu,
             })
         })
         .collect();
@@ -587,23 +606,71 @@ fn process_usage() -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
     summarize_processes(values, cpu)
 }
 
+// The display fonts are ASCII only, so a process named in another script would
+// arrive as nothing but its extension and several different apps would collapse
+// into one row. Those fall back to the process id, which at least stays
+// distinct and is honest about not knowing the name.
+fn display_name(raw: &str, pid: u32) -> String {
+    let cleaned = ascii(raw, 20);
+    let stem = cleaned.strip_suffix(".exe").unwrap_or(&cleaned).trim();
+    if stem.is_empty() {
+        format!("PID {pid}")
+    } else {
+        stem.to_string()
+    }
+}
+
 fn summarize_processes(
-    mut values: Vec<ProcessUsage>,
+    values: Vec<ProcessUsage>,
     cpu: u8,
 ) -> (Vec<ProcessUsage>, u16, u8, bool, bool) {
     let codex_active = any_process(&values, &["codex", "chatgpt"]);
     let claude_active = any_process(&values, &["claude"]);
     let process_count = values.len().min(u16::MAX as usize) as u16;
-    values.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
-    values.truncate(5);
-    while values.len() < 5 {
-        values.push(ProcessUsage {
+    // Chrome and Claude run as many processes; three rows of the same name tell
+    // the viewer nothing, so instances are added together under one name. The
+    // totals are what a person means by "what is this app costing me".
+    let mut merged: Vec<ProcessUsage> = Vec::new();
+    for process in values {
+        match merged.iter_mut().find(|held| held.name == process.name) {
+            Some(held) => {
+                held.cpu += process.cpu;
+                held.ram_mb = held.ram_mb.saturating_add(process.ram_mb);
+                held.impact += process.impact;
+            }
+            None => merged.push(process),
+        }
+    }
+    let values = merged;
+    let mut chosen: Vec<ProcessUsage> = Vec::new();
+    // Take the leaders of each ordering in turn. A process that leads two of
+    // them is already here, so it is added once and the set stays short.
+    let metrics: [fn(&ProcessUsage) -> f32; 3] =
+        [|p| p.cpu, |p| p.ram_mb as f32, |p| p.impact];
+    for metric in metrics {
+        let mut ranked: Vec<&ProcessUsage> = values.iter().collect();
+        ranked.sort_by(|a, b| metric(b).total_cmp(&metric(a)));
+        for process in ranked.into_iter().take(PROCESSES_PER_METRIC) {
+            if chosen.len() >= PROCESSES_SENT {
+                break;
+            }
+            if chosen.iter().any(|held| held.name == process.name) {
+                continue;
+            }
+            chosen.push(process.clone());
+        }
+    }
+    // The board starts every snapshot from placeholder data, so short rows are
+    // padded rather than left for it to guess at.
+    while chosen.len() < PROCESSES_PER_METRIC {
+        chosen.push(ProcessUsage {
             name: "-".into(),
             cpu: 0.0,
             ram_mb: 0,
+            impact: 0.0,
         });
     }
-    (values, process_count, cpu, codex_active, claude_active)
+    (chosen, process_count, cpu, codex_active, claude_active)
 }
 
 #[cfg(target_os = "macos")]
@@ -1104,8 +1171,9 @@ fn battery_power_watts() -> f32 {
 // still type-checks it.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod portable {
-    use super::{ProcessUsage, ascii, summarize_processes};
+    use super::{ProcessUsage, summarize_processes};
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::Instant;
     use sysinfo::{Networks, ProcessesToUpdate, System};
 
     // CPU usage is the difference between two refreshes, so the System has to
@@ -1132,14 +1200,42 @@ mod portable {
         let mut system = system();
         system.refresh_cpu_usage();
         system.refresh_processes(ProcessesToUpdate::All, true);
+        // disk_usage reports the bytes moved since the previous refresh, so a
+        // rate needs the length of that gap rather than a fixed interval.
+        // On the first refresh disk_usage reports everything the process has
+        // ever moved, not a delta, so there is no rate to be had and the disk
+        // term is left out rather than dividing a lifetime total by a moment.
+        let elapsed: Option<f32> = {
+            static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+            let mut last = LAST
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = Instant::now();
+            let gap = last.map(|then| now.duration_since(then).as_secs_f32().max(0.001));
+            *last = Some(now);
+            gap
+        };
         let values = system
             .processes()
-            .values()
-            .map(|process| ProcessUsage {
-                name: ascii(&process.name().to_string_lossy(), 20),
-                // Measured against a single core, matching ps on macOS.
-                cpu: process.cpu_usage(),
-                ram_mb: (process.memory() / 1_048_576) as u32,
+            .iter()
+            .map(|(pid, process)| {
+                let cpu = process.cpu_usage();
+                let disk_term = match elapsed {
+                    Some(seconds) => {
+                        let disk = process.disk_usage();
+                        (disk.read_bytes + disk.written_bytes) as f32 / 1_048_576.0 / seconds
+                            * super::DISK_IMPACT_PER_MB
+                    }
+                    None => 0.0,
+                };
+                ProcessUsage {
+                    name: super::display_name(&process.name().to_string_lossy(), pid.as_u32()),
+                    // Measured against a single core, matching ps on macOS.
+                    cpu,
+                    ram_mb: (process.memory() / 1_048_576) as u32,
+                    impact: cpu + disk_term,
+                }
             })
             .collect();
         let cpu = system.global_cpu_usage().clamp(0.0, 100.0) as u8;

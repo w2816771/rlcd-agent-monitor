@@ -12,6 +12,7 @@ MonitorModel monitor_demo_model() {
           {"rust-analyzer", 11.0f, 846},
           {"codex app", 8.0f, 622},
           {"claude helper", 4.0f, 380}}},
+        5,  // process_rows: how many of the array above the host filled.
         {{"New models push efficient on-device AI forward",
           "Developers rethink how coding agents work together",
           "Chip makers announce lower-power processors",

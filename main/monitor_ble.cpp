@@ -227,6 +227,7 @@ bool parse_snapshot(const char *json, int slot) {
 
     cJSON *processes = cJSON_GetObjectItemCaseSensitive(root, "processes");
     if (cJSON_IsArray(processes)) {
+        next.process_rows = 0;
         for (size_t i = 0; i < next.processes.size(); ++i) {
             cJSON *obj = cJSON_GetArrayItem(processes, i);
             if (!cJSON_IsObject(obj)) break;
@@ -234,6 +235,11 @@ bool parse_snapshot(const char *json, int slot) {
             copy_float(obj, "cpu", next.processes[i].cpu_percent);
             cJSON *ram = cJSON_GetObjectItemCaseSensitive(obj, "ram_mb");
             if (cJSON_IsNumber(ram)) next.processes[i].ram_mb = std::clamp(ram->valueint, 0, 65535);
+            // An older host sends no impact, so it falls back to processor time
+            // and the impact ordering simply matches the processor one.
+            next.processes[i].impact = next.processes[i].cpu_percent;
+            copy_float(obj, "impact", next.processes[i].impact);
+            next.process_rows = i + 1;
         }
     }
 

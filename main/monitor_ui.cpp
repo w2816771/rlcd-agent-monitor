@@ -1,6 +1,7 @@
 #include "monitor_ui.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 
 #include "debug_log.h"
@@ -234,22 +235,62 @@ void MonitorUi::create_system(const MonitorModel &m) {
     // The top processes page folded in here. Three rows rather than four, so
     // the load figures above keep the space that makes them readable.
     constexpr int kRows = 3;
+    // The host sends the leaders of every ordering, so the ordering can change
+    // here without waiting for the next snapshot.
+    const std::size_t sent = m.process_rows ? std::min(m.process_rows, m.processes.size()) : m.processes.size();
+    std::array<const ProcessUsage *, kMaxProcesses> ranked{};
+    std::size_t ranked_count = 0;
+    for (std::size_t i = 0; i < sent; ++i) {
+        if (m.processes[i].name.empty() || m.processes[i].name == "-") continue;
+        ranked[ranked_count++] = &m.processes[i];
+    }
+    const ProcessSort sort = process_sort_;
+    std::stable_sort(ranked.begin(), ranked.begin() + ranked_count,
+                     [sort](const ProcessUsage *a, const ProcessUsage *b) {
+                         switch (sort) {
+                             case ProcessSort::Ram: return a->ram_mb > b->ram_mb;
+                             case ProcessSort::Impact: return a->impact > b->impact;
+                             case ProcessSort::Cpu: break;
+                         }
+                         return a->cpu_percent > b->cpu_percent;
+                     });
+    static const ProcessUsage kBlank{"-", 0.0f, 0, 0.0f};
     for (int i = 0; i < kRows; ++i) {
-        const ProcessUsage &process = m.processes[i];
+        const ProcessUsage &process =
+            (static_cast<std::size_t>(i) < ranked_count) ? *ranked[i] : kBlank;
         lv_obj_t *row = panel(pages_[1], 0, 196 + i * 27, 400, 25);
         lv_obj_t *name = text(row, process.name.empty() ? "-" : process.name.c_str(), 12, 3, &rlcd_font_bold_18);
         lv_obj_set_width(name, 210); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
-        char meta[24]; snprintf(meta, sizeof(meta), "%.1fG", process.ram_mb / 1024.0f);
+        // The secondary column carries whichever figure is not being ranked on,
+        // so both numbers stay visible whichever ordering is chosen.
+        char meta[24];
+        char leader[16];
+        switch (process_sort_) {
+            case ProcessSort::Ram:
+                snprintf(meta, sizeof(meta), "%.0f%%", process.cpu_percent);
+                snprintf(leader, sizeof(leader), "%.1fG", process.ram_mb / 1024.0f);
+                break;
+            case ProcessSort::Impact:
+                snprintf(meta, sizeof(meta), "%.1fG", process.ram_mb / 1024.0f);
+                snprintf(leader, sizeof(leader), "%.0f", process.impact);
+                break;
+            case ProcessSort::Cpu:
+                snprintf(meta, sizeof(meta), "%.1fG", process.ram_mb / 1024.0f);
+                snprintf(leader, sizeof(leader), "%.0f%%", process.cpu_percent);
+                break;
+        }
         lv_obj_t *ram_text = text(row, meta, 0, 5, &rlcd_font_bold_14);
         lv_obj_set_width(ram_text, 90); lv_obj_set_style_text_align(ram_text, LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_align(ram_text, LV_ALIGN_TOP_RIGHT, -74, 5);
-        char cpu_text[16]; snprintf(cpu_text, sizeof(cpu_text), "%.0f%%", process.cpu_percent);
-        lv_obj_t *process_cpu = text(row, cpu_text, 0, 3, &rlcd_font_bold_18);
+        lv_obj_t *process_cpu = text(row, leader, 0, 3, &rlcd_font_bold_18);
         lv_obj_set_width(process_cpu, 66); lv_obj_set_style_text_align(process_cpu, LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_align(process_cpu, LV_ALIGN_TOP_RIGHT, -12, 3);
     }
+    const char *sort_name = process_sort_ == ProcessSort::Ram      ? "BY RAM"
+                            : process_sort_ == ProcessSort::Impact ? "BY IMPACT"
+                                                                   : "BY CPU";
     char count[28]; snprintf(count, sizeof(count), "TOP %d OF %u", kRows, m.process_count);
-    footer(pages_[1], count, "HOLD KEY: SOURCE");
+    footer(pages_[1], count, sort_name);
 }
 void MonitorUi::create_activity(const MonitorModel &m) {
     pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENT USAGE", 3); source_tag(pages_[2], m);
@@ -388,6 +429,15 @@ void MonitorUi::show_home() {
 }
 
 void MonitorUi::handle_long_press(const MonitorModel &m) {
+    if (current_page_ == kPageSystem) {
+        // Cycles processor, memory, impact. This page gives up switching the
+        // shown source for it; the other four pages still offer that.
+        process_sort_ = static_cast<ProcessSort>(
+            (static_cast<uint8_t>(process_sort_) + 1) % kProcessSortCount);
+        lv_obj_delete(pages_[kPageSystem]); pages_[kPageSystem] = nullptr;
+        create_system(m); lv_obj_invalidate(pages_[kPageSystem]);
+        return;
+    }
     if (current_page_ == kPageNews) {
         news_page_ = 1 - news_page_;
         lv_obj_delete(pages_[kPageNews]); pages_[kPageNews] = nullptr;

@@ -120,7 +120,7 @@ them with the value given.
 | `net_up` | number | upload rate, kilobytes per second | same | yes |
 | `noise_offset` | number | microphone calibration in dB, from config | applied to the board's microphone | indirectly |
 | `process_count` | integer | number of running processes | clamped 0 to 65,535 | yes |
-| `processes` | array | exactly 5 items, highest CPU first, see 4.2 | extra items ignored | first 4 |
+| `processes` | array | 5 to 12 items, see 4.2 | more than 12 ignored | top 3, reordered on the board |
 | `codex` | object | Codex usage, see 4.1 | | yes |
 | `claude` | object | Claude usage, see 4.1 | | yes |
 | `headlines` | array of string | exactly 8 news titles | extra items ignored | yes |
@@ -145,11 +145,34 @@ under TOKENS TODAY.
 
 | Key | Type | Meaning | Board handling |
 |---|---|---|---|
-| `name` | string | process name, no path | clipped at the row width |
+| `name` | string | process name, no path or extension | clipped at the row width |
 | `cpu` | number | percent of **one core**, so it can exceed 100 | drawn as a whole number |
 | `ram_mb` | integer | resident memory, MiB | clamped 0 to 65,535 |
+| `impact` | number | composite cost, see below | missing falls back to `cpu` |
 
-If fewer than 5 processes exist, pad with `{"name": "-", "cpu": 0, "ram_mb": 0}`.
+If fewer than 5 processes exist, pad with
+`{"name": "-", "cpu": 0, "ram_mb": 0, "impact": 0}`.
+
+**Instances are added together.** A browser or agent runs as many processes;
+send one item per name with the totals, or the board shows the same application
+in every row. The process name has its `.exe` stripped, and a name with no
+printable ASCII left in it becomes `PID <number>` so unrelated applications do
+not merge into one row.
+
+**The board reorders these itself.** Holding KEY on the host system page cycles
+the rows between CPU, RAM, and impact without asking the host for a different
+list, so the array must contain every process that could lead any of the three
+orderings: send the union of the top 5 by each, deduplicated, up to 12 items.
+Sending only the top 5 by CPU makes the other two orderings wrong.
+
+`impact` is **not watts**. Neither platform exposes per process power without
+elevated access, so the reference host sends processor percent plus disk
+throughput in MiB/s times 2, which is the same kind of composite Task Manager
+and Activity Monitor display. The board labels it IMPACT. A host with nothing
+better to offer should send `cpu`, which makes that ordering match the CPU one.
+The reference host does exactly that on macOS, where `ps` reports no disk
+figures, and on the first snapshot, where there is no interval to measure a
+rate over.
 
 ### 4.3 Example
 
@@ -177,11 +200,11 @@ If fewer than 5 processes exist, pad with `{"name": "-", "cpu": 0, "ram_mb": 0}`
   "claude": {"active": false, "tokens_k": 6480, "context": 31, "sessions": 2,
              "cost": 0, "five_hour": "5H 1.4M", "weekly": "7D 9.1M"},
   "processes": [
-    {"name": "code.exe", "cpu": 24.0, "ram_mb": 1843},
-    {"name": "claude.exe", "cpu": 18.0, "ram_mb": 1229},
-    {"name": "chrome.exe", "cpu": 11.0, "ram_mb": 846},
-    {"name": "explorer.exe", "cpu": 3.0, "ram_mb": 180},
-    {"name": "-", "cpu": 0, "ram_mb": 0}
+    {"name": "code", "cpu": 24.0, "ram_mb": 1843, "impact": 26.4},
+    {"name": "claude", "cpu": 18.0, "ram_mb": 1229, "impact": 18.0},
+    {"name": "chrome", "cpu": 11.0, "ram_mb": 846, "impact": 39.2},
+    {"name": "explorer", "cpu": 3.0, "ram_mb": 180, "impact": 3.0},
+    {"name": "-", "cpu": 0, "ram_mb": 0, "impact": 0}
   ],
   "process_count": 214,
   "net_down": 51.9,
@@ -222,9 +245,10 @@ carries the top processes, and the debug log shows the board's own log lines.
 Rules the board enforces:
 
 - Button events go **only to the shown host**.
-- Holding KEY on any page except news and the debug log switches the shown
-  host. That switch is not sent as event 2. On those two pages KEY held pages
-  through headlines and log lines instead, and is sent as event 2.
+- Holding KEY on any page except host system, news and the debug log switches
+  the shown host. That switch is not sent as event 2. On those three pages KEY
+  held reorders the process rows, pages through headlines, and pages through log
+  lines respectively, and is sent as event 2.
 - The board sends event 5 or 6 once a host has delivered its first snapshot,
   and again whenever that host's shown state changes. Ignore unknown event
   codes.
