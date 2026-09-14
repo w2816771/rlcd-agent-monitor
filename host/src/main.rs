@@ -262,6 +262,12 @@ async fn main() -> Result<()> {
                         Local::now().second(),
                         json.len()
                     );
+                    // Set RLCD_DUMP to see what was actually sent; the board
+                    // gives no feedback, so this is the only way to tell real
+                    // readings from zeros.
+                    if env::var_os("RLCD_DUMP").is_some() {
+                        println!("{}", String::from_utf8_lossy(&json));
+                    }
                     // A machine the board is not showing only has to stay fresh
                     // enough to switch to, and the board wakes it the moment it
                     // becomes the shown one.
@@ -741,7 +747,6 @@ fn codex_usage(active: bool) -> AgentUsage {
 fn claude_usage(active: bool) -> AgentUsage {
     let root = home().join(".claude/projects");
     let cutoff = start_of_today();
-    let mut tokens = 0u64;
     let mut sessions = 0u8;
     let mut last_context = 0u64;
     for path in recent_jsonl(&root, cutoff) {
@@ -759,10 +764,6 @@ fn claude_usage(active: bool) -> AgentUsage {
                 .get("input_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            let output = usage
-                .get("output_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
             let cached = usage
                 .get("cache_read_input_tokens")
                 .and_then(Value::as_u64)
@@ -771,17 +772,21 @@ fn claude_usage(active: bool) -> AgentUsage {
                 .get("cache_creation_input_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            tokens = tokens.saturating_add(input + output + cached + created);
             last_context = input + cached + created;
         }
         if active_today {
             sessions = sessions.saturating_add(1);
         }
     }
-    let (five_hour, weekly) = claude_ccusage_windows();
+    // Today's total comes from ccusage rather than from summing these records.
+    // Resuming a session copies earlier turns into the new file, so the same
+    // usage record appears several times and a plain sum reads about twice the
+    // real figure. ccusage drops the repeats by message and request id, and it
+    // already supplies the two window strings shown beside this number.
+    let (five_hour, weekly, today) = claude_ccusage_windows();
     AgentUsage {
         active,
-        tokens_k: tokens / 1000,
+        tokens_k: today / 1000,
         context: ((last_context * 100 / 200_000).min(100)) as u8,
         sessions,
         cost: 0.0,
@@ -800,8 +805,9 @@ fn compact_tokens(tokens: u64) -> String {
     }
 }
 
-fn claude_ccusage_windows() -> (u64, u64) {
-    static CACHE: OnceLock<Mutex<Option<(Instant, (u64, u64))>>> = OnceLock::new();
+// Returns the 5 hour window, the 7 day window, and today's total.
+fn claude_ccusage_windows() -> (u64, u64, u64) {
+    static CACHE: OnceLock<Mutex<Option<(Instant, (u64, u64, u64))>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache
         .lock()
@@ -856,7 +862,30 @@ fn claude_ccusage_windows() -> (u64, u64) {
         .and_then(|item| item.get("totalTokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let values = (five_hour, weekly);
+    // Match on the date rather than taking the last entry, which is the most
+    // recent day with any usage and not necessarily today.
+    let wanted = Local::now().format("%Y-%m-%d").to_string();
+    let report: Value = serde_json::from_str(&run(&[
+        "--yes",
+        "ccusage@latest",
+        "claude",
+        "daily",
+        "--json",
+        "--offline",
+    ]))
+    .unwrap_or(Value::Null);
+    let today = report
+        .get("daily")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("date").and_then(Value::as_str) == Some(wanted.as_str()))
+        })
+        .and_then(|item| item.get("totalTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let values = (five_hour, weekly, today);
     *guard = Some((Instant::now(), values));
     values
 }
@@ -1066,7 +1095,17 @@ mod portable {
     fn system() -> MutexGuard<'static, System> {
         static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
         SYSTEM
-            .get_or_init(|| Mutex::new(System::new()))
+            .get_or_init(|| {
+                // A percentage is the difference between two refreshes, so the
+                // first one has nothing to compare against and reports every
+                // process at zero and the machine at 100. Take that throwaway
+                // baseline here rather than sending it to the board.
+                let mut system = System::new();
+                system.refresh_cpu_usage();
+                system.refresh_processes(ProcessesToUpdate::All, true);
+                std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+                Mutex::new(system)
+            })
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
