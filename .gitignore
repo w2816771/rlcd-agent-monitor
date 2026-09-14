@@ -7,3 +7,4 @@ host/target/
 
 host/*.out
 host/*.err
+host/*.log

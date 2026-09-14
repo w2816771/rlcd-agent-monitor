@@ -492,8 +492,11 @@ To start it at logon, run once:
 powershell -ExecutionPolicy Bypass -File .\service.ps1 install
 ```
 
-`service.ps1` also accepts `uninstall`, `restart`, and `status`. The logon task
-keeps no log file, so run the exe in a terminal to troubleshoot.
+`service.ps1` also accepts `uninstall`, `restart`, `status`, and `logs`. The
+task runs the collector through `cmd` so its output appends to
+`hostlcd-host.log`; `status` says whether the collector is actually
+running, and `logs` follows that file. A logon task has no console, so
+without the log there is no telling a working collector from a crashed one.
 
 Platform notes for the reference host:
 
