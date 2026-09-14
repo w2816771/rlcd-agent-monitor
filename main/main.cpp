@@ -56,6 +56,10 @@ void flush(lv_display_t *disp, const lv_area_t *area, uint8_t *pixels) {
     // and the saving was one SPI transfer of about 6 ms against a BLE radio
     // that wakes twice a second, so correctness wins until then.
     display.RLCD_Display();
+    // The panel drives its own pixels whether or not the picture changes, and
+    // this one changes about once a minute, so it idles at its low refresh rate
+    // between writes. RLCD_Display wakes it again before the next one.
+    display.RLCD_SetLowPower(true);
     lv_display_flush_ready(disp);
 }
 
