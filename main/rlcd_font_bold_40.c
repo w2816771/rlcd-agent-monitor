@@ -1,3 +1,11 @@
+/*
+ * Glyph table generated from Montserrat-Bold.ttf with lv_font_conv, and so a
+ * derivative of that typeface.
+ * Copyright 2011 The Montserrat Project Authors
+ * https://github.com/JulietaUla/Montserrat
+ * Licensed under the SIL Open Font License, Version 1.1.
+ * Full text: licenses/Montserrat-OFL.txt. See also NOTICE.
+ */
 /*******************************************************************************
  * Size: 40 px
  * Bpp: 1

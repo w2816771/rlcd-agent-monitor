@@ -1,105 +1,135 @@
 # RLCD Agent Monitor
 
-A desk monitor built on the Waveshare ESP32-S3-RLCD-4.2, a 400 by 300
-reflective monochrome display board. The board shows a computer's system load,
-network, Codex and Claude usage, top processes, news, weather, room conditions,
-and sound level. A small Rust program on each computer, the host, sends that
-data over Bluetooth Low Energy.
+A desk monitor built on the Waveshare ESP32-S3-RLCD-4.2, a 400 by 300 reflective
+monochrome display. The board shows a computer's load, network, Codex and Claude
+token usage, top processes, news, weather, room conditions and sound level. A
+small Rust program on each computer, the host, sends that data over Bluetooth Low
+Energy.
 
-## Features
+Reflective means no backlight: it is readable in daylight, holds its image
+without power, and is meant to sit on a desk being glanced at rather than
+watched.
 
-- Seven pages: overview, host system, agent usage, top processes, news, sound,
-  and devices.
-- Up to three computers connected at once, such as a Mac and a PC, with the
-  shown one switchable from the board and remembered across reboots.
-- Two-way Bluetooth. Board buttons can run commands on the shown computer.
-- Onboard temperature and humidity, a calibrated sound level meter with
-  history, and battery level.
-- Power save mode on battery with automatic light sleep, and full function mode
-  while plugged into a computer's USB port.
+## What you need
 
-## Buttons
+| | |
+|---|---|
+| Board | **Waveshare ESP32-S3-RLCD-4.2** (ESP32-S3 with a 400x300 ST7305 reflective LCD, SHTC3 sensor, ES7210 microphone, battery holder). No other board will work without porting the display driver and the pin map in `main/main.cpp`. |
+| A computer | macOS or Windows 10 1703+/11, with Bluetooth Low Energy. Up to three can feed one board at once. |
+| To build the firmware | ESP-IDF 5.5.1 |
+| To build the host | Rust 1.95 or newer. On Windows also the Visual Studio Build Tools C++ workload. |
+| Optional | Node.js, only for Claude's 5 hour and weekly figures, which come from `ccusage` |
+
+Everything else — weather and news — uses keyless public endpoints, so there is
+nothing to sign up for.
+
+## Pages
+
+Six, cycled with the buttons: overview (clock, weather, room temperature,
+humidity, sound history), host system (CPU, RAM, network, top processes), agent
+usage (Codex and Claude tokens), news, devices, and a debug log showing the
+board's own log lines.
 
 | Button | Press | Hold |
 |---|---|---|
-| KEY | next page | switch source; on the news page, next headlines |
+| KEY | next page | switch source; on host system reorders the processes, on news and debug pages through them |
 | BOOT | previous page | back to the overview |
 | PWR | power on | power off |
 
-## Repository layout
+## Quick start
 
-| Path | Contents |
-|---|---|
-| `main/` | firmware application: pages, Bluetooth, sensors, sound meter |
-| `components/rlcd/` | display driver, derived from Waveshare's Apache-2.0 example |
-| `host/` | Rust host for macOS and Windows, its config, and startup scripts |
-| `docs/host-api.md` | full host contract: Bluetooth protocol, snapshot schema, requirements |
-| `CLAUDE.md` | architecture notes and engineering rules for this codebase |
-
-## Firmware
-
-Requires ESP-IDF 5.5.1. The wrapper script uses `~/esp/esp-idf-v5.5.1`, or the
-checkout named by `IDF_PATH`. The first build downloads LVGL through the ESP-IDF
-Component Manager.
+**1. Flash the firmware.** With ESP-IDF 5.5.1 installed:
 
 ```bash
 ./idf.sh build
 ```
 
-The board uses its native USB port. Flash with the USB reset method, because the
-default reset method cannot put this chip into download mode while the firmware
-is running:
+The board uses its native USB port, and needs the USB reset method because the
+default one cannot enter download mode while the firmware is running:
 
 ```bash
 cd build && esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX --before usb_reset --after hard_reset write_flash @flash_args
 ```
 
-If the port does not appear at all, hold BOOT, click PWR, keep holding BOOT for a
-second, then flash.
+On Windows the port looks like `COM5`. If it does not appear at all, hold BOOT,
+click PWR, keep holding BOOT for a second, then flash.
 
-Crash output goes only to the unconnected UART0, so the firmware saves a core
-dump to flash instead. Read it back with the ELF that matches the flashed build:
+**2. Configure the host.** `config.yaml` is not tracked by git, so copy the
+template and edit your own copy:
 
 ```bash
-./idf.sh -p /dev/cu.usbmodemXXXX coredump-info
+cp host/config.example.yaml host/config.yaml
 ```
 
-## Host
+Set `weather.latitude`, `weather.longitude` and `weather.region` for where you
+are, and give every computer a different `device_name`, such as `MAC` and `PC`.
+Two hosts sharing a name overwrite each other on the board. The file is re-read
+every loop, so edits take effect without a restart.
 
-On macOS, from `host/`:
+**3. Build and run the host.**
 
 ```bash
-cargo build --release
+cd host && cargo build --release
 ```
 
 ```bash
 ./target/release/rlcd-host
 ```
 
-To start it at login, run `./service.sh install`, then use `./service.sh logs`
-to follow it. macOS asks for Bluetooth permission on first run.
+To start it at login: `./service.sh install` on macOS, then `./service.sh logs`
+to follow it. On Windows, `service.ps1 install` registers a logon task; it also
+takes `status`, `logs`, `restart` and `uninstall`. macOS asks for Bluetooth
+permission on first run.
 
-On Windows, follow `docs/host-api.md`, section 11, and install the logon task
-with `service.ps1`.
+On Windows the host also shows a notification area icon. Windows puts new icons
+in the hidden overflow, so drag it onto the taskbar if you want it visible. Its
+tooltip shows the last successful send, and its menu opens the log, the config
+and the folder, or stops the collector.
 
-Every computer must set a different `device_name` in `host/config.yaml`, such as
-`MAC` and `PC`. The config is re-read continuously, so edits take effect without
-a restart. It also sets weather location, news topic, update intervals, button
-commands, and the microphone calibration `noise_offset_db`.
+## Repository layout
 
-## Power behavior
+| Path | Contents |
+|---|---|
+| `main/` | firmware: pages, Bluetooth, sensors, sound meter, debug log |
+| `components/rlcd/` | display driver, derived from Waveshare's example |
+| `host/` | Rust host, its config template and startup scripts |
+| `docs/host-api.md` | the full host contract: BLE protocol, snapshot schema, how every field is derived |
+| `CLAUDE.md` | architecture notes and the engineering rules for this codebase |
 
-- Plugged into a computer, the board runs in full function mode, polls often,
-  and keeps USB alive for flashing. The battery corner reads `USB`, because the
-  charger holds the cell voltage near full.
-- On battery, it enters power save mode with automatic light sleep and slower
-  polling.
-- A computer that is not being shown sends every five minutes instead of every
-  minute, and is woken immediately when you switch to it.
+`docs/host-api.md` is the file to read before changing either side of the
+protocol, or before writing a host in another language. It is a specification,
+not a tutorial.
+
+## Power behaviour
+
+Plugged into a computer, the board runs in full function mode and polls often.
+On battery it enters power save with automatic light sleep and slower polling.
+A computer the board is not currently showing sends every five minutes instead
+of every minute, and is woken the moment you switch to it.
 
 ## Status and known limitations
 
-- The Windows host compiles, but has not yet been run on Windows.
-- Switching between two real computers has not been tested with two machines.
-- The Bluetooth characteristics require no pairing.
-- The card slot, speaker, and real-time clock chip on the board are not used yet.
+- Runs on macOS and Windows. The Windows path has been exercised: build, flash,
+  collect, reconnect after a board reboot.
+- Switching between two real computers has been implemented and tested from the
+  board side, but not yet with two machines connected at once.
+- The Bluetooth characteristics require no pairing, so any nearby BLE device can
+  write a snapshot to the board.
+- `gpu` and `temp` are not measured on any platform, and `battery` and `power`
+  only on macOS laptops. On Windows `swap` reads zero, because `sysinfo` reports
+  no used swap there.
+- Per process power is not available on either platform without elevated access,
+  so the IMPACT ordering is a composite of CPU and disk traffic, not watts.
+- Two display optimisations were tried and reverted: writing only the changed
+  window made the panel glitch, and idling it at its low refresh rate washed the
+  picture out to grey. Both remain in the driver, uncalled. See `CLAUDE.md`.
+- The card slot, speaker and real time clock chip on the board are unused.
+
+## Licence
+
+Apache License 2.0, see `LICENSE` and `NOTICE`.
+
+The display driver derives from Waveshare's Apache-2.0 example. The bitmap fonts
+are generated from Montserrat, under the SIL Open Font License 1.1; its text is
+in `licenses/Montserrat-OFL.txt`. If you redistribute this project or the font
+tables, both notices have to travel with it.

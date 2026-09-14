@@ -1,0 +1,50 @@
+RLCD Agent Monitor
+Copyright 2026 soloren
+
+This product includes software developed as part of the RLCD Agent Monitor
+project, licensed under the Apache License, Version 2.0. A copy of the licence
+is in the LICENSE file at the root of this repository.
+
+--------------------------------------------------------------------------------
+Third party material redistributed in this repository
+--------------------------------------------------------------------------------
+
+1. ST7305 reflective display driver
+   components/rlcd/display_bsp.cpp
+   components/rlcd/include/display_bsp.h
+
+   Derived from Waveshare's ESP32-S3-RLCD-4.2 example code, licensed under the
+   Apache License, Version 2.0.
+   Copyright (c) Waveshare Electronics
+   https://www.waveshare.com/wiki/ESP32-S3-RLCD-4.2
+
+   Modified for this project: converted to a C++ class, ported onto the ESP-IDF
+   esp_lcd panel IO API, given a pixel lookup table for the landscape
+   orientation, and extended with a windowed write and a low power mode helper.
+   Some comments from the original remain in Chinese.
+
+2. Montserrat typeface
+   main/rlcd_font_bold_14.c
+   main/rlcd_font_bold_18.c
+   main/rlcd_font_bold_26.c
+   main/rlcd_font_bold_40.c
+   main/rlcd_font_bold_72.c
+   main/rlcd_font_bold_104.c
+
+   These files are 1 bit bitmap glyph tables generated with lv_font_conv from
+   Montserrat-Bold.ttf, and are therefore derivatives of that typeface.
+   Copyright 2011 The Montserrat Project Authors
+   https://github.com/JulietaUla/Montserrat
+
+   Licensed under the SIL Open Font License, Version 1.1. The full licence text
+   is in licenses/Montserrat-OFL.txt. The exact lv_font_conv command used for
+   each size is recorded in the header comment of the file it produced.
+
+--------------------------------------------------------------------------------
+Dependencies, not redistributed here
+--------------------------------------------------------------------------------
+
+The firmware builds against ESP-IDF (Apache License 2.0) and LVGL (MIT), and the
+host builds against the crates listed in host/Cargo.toml. Those are fetched at
+build time by the ESP-IDF Component Manager and by Cargo, and their licences
+apply to them rather than to this repository.
