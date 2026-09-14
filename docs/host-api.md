@@ -209,20 +209,22 @@ The board notifies the button characteristic with exactly 4 bytes:
 | Event | Meaning | Required host action |
 |---|---|---|
 | 1 | KEY pressed | run the `buttons.key` command if set |
-| 2 | KEY held on the news page | run `buttons.key_hold` if set |
+| 2 | KEY held on the news or debug page | run `buttons.key_hold` if set |
 | 3 | BOOT pressed | run `buttons.boot` if set |
 | 4 | BOOT held | run `buttons.boot_hold` if set |
 | 5 | this host is now the one shown | switch to the fast update interval; if it was hidden, send a snapshot immediately |
 | 6 | this host is now hidden | switch to the slow update interval |
 
-Page numbers: 1 overview, 2 host system, 3 agent usage, 4 top processes,
-5 news, 6 sound, 7 devices.
+Page numbers: 1 overview, 2 host system, 3 agent usage, 4 news, 5 devices,
+6 debug log. The overview carries the sound history, the host system page
+carries the top processes, and the debug log shows the board's own log lines.
 
 Rules the board enforces:
 
 - Button events go **only to the shown host**.
-- Holding KEY on any page except news switches the shown host. That switch is
-  not sent as event 2.
+- Holding KEY on any page except news and the debug log switches the shown
+  host. That switch is not sent as event 2. On those two pages KEY held pages
+  through headlines and log lines instead, and is sent as event 2.
 - The board sends event 5 or 6 once a host has delivered its first snapshot,
   and again whenever that host's shown state changes. Ignore unknown event
   codes.
