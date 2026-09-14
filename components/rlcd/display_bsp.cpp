@@ -49,6 +49,10 @@ height_(height)
     DisplayLen                = transfer >> 3; //(1byte 8ipex)
     DispBuffer                = (uint8_t *) heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM);
     assert(DispBuffer);
+    ShadowBuffer              = (uint8_t *) heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM);
+    WindowBuffer              = (uint8_t *) heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM);
+    assert(ShadowBuffer);
+    assert(WindowBuffer);
 
 #if (AlgorithmOptimization == 3)
 	PixelIndexLUT = (uint16_t (*)[300])heap_caps_malloc(transfer * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
@@ -188,6 +192,7 @@ void DisplayPort::RLCD_ColorClear(uint8_t color) {
 }
 
 void DisplayPort::RLCD_Display() {
+    if (LowPowerIdle) RLCD_SetLowPower(false);
     RLCD_SendCommand(0x2A);     // Column Address Set
   	RLCD_SendData(0x12);
   	RLCD_SendData(0x2A);
@@ -196,9 +201,76 @@ void DisplayPort::RLCD_Display() {
   	RLCD_SendData(0x00);
   	RLCD_SendData(0xC7);
 
-  	RLCD_SendCommand(0x2c);     // Page Address Set
+  	RLCD_SendCommand(0x2c);     // Memory Write
 
 	RLCD_Sendbuffera(DispBuffer,DisplayLen);
+    if (ShadowBuffer) memcpy(ShadowBuffer, DispBuffer, DisplayLen);
+}
+
+// The landscape buffer is column major: index = (x >> 1) * 75 + ((299 - y) >> 2),
+// so one byte holds two columns by four rows. That makes the panel's page
+// address the x pair, 200 of them, and its column address a group of three
+// y blocks, 25 of them. A window is therefore a range of x pairs by a range of
+// y blocks, and the rows of that window sit 75 bytes apart in the buffer.
+int DisplayPort::RLCD_DisplayChanged() {
+    if (!ShadowBuffer || !WindowBuffer) {
+        RLCD_Display();
+        return DisplayLen;
+    }
+    const int rows = height_ >> 2;   // 75 bytes per x pair.
+    const int pairs = DisplayLen / rows;  // 200 x pairs.
+    int first_pair = pairs, last_pair = -1, first_row = rows, last_row = -1;
+    for (int pair = 0; pair < pairs; ++pair) {
+        const uint8_t *current = &DispBuffer[pair * rows];
+        const uint8_t *shown = &ShadowBuffer[pair * rows];
+        if (memcmp(current, shown, rows) == 0) continue;
+        if (pair < first_pair) first_pair = pair;
+        if (pair > last_pair) last_pair = pair;
+        for (int row = 0; row < rows; ++row) {
+            if (current[row] == shown[row]) continue;
+            if (row < first_row) first_row = row;
+            if (row > last_row) last_row = row;
+        }
+    }
+    if (last_pair < 0) return 0;  // Nothing changed: leave the panel alone.
+
+    // Each column address covers three y blocks, so the window has to grow out
+    // to that boundary or the panel would land the bytes in the wrong place.
+    first_row -= first_row % 3;
+    last_row += 2 - (last_row % 3);
+    if (last_row >= rows) last_row = rows - 1;
+
+    const int row_count = last_row - first_row + 1;
+    const int pair_count = last_pair - first_pair + 1;
+    int used = 0;
+    for (int pair = first_pair; pair <= last_pair; ++pair) {
+        memcpy(&WindowBuffer[used], &DispBuffer[pair * rows + first_row], row_count);
+        used += row_count;
+    }
+    (void)pair_count;
+
+    if (LowPowerIdle) RLCD_SetLowPower(false);
+    RLCD_SendCommand(0x2A);     // Column Address Set, in y blocks of three.
+    RLCD_SendData(0x12 + first_row / 3);
+    RLCD_SendData(0x12 + last_row / 3);
+
+    RLCD_SendCommand(0x2B);     // Page Address Set, in x pairs.
+    RLCD_SendData(first_pair);
+    RLCD_SendData(last_pair);
+
+    RLCD_SendCommand(0x2c);     // Memory Write
+    RLCD_Sendbuffera(WindowBuffer, used);
+    memcpy(ShadowBuffer, DispBuffer, DisplayLen);
+    return used;
+}
+
+void DisplayPort::RLCD_SetLowPower(bool enabled) {
+    if (enabled == LowPowerIdle) return;
+    // 0x39 enters idle mode, which the ST7305 drives at its low refresh rate;
+    // 0x38 leaves it. Writing pixels in the low rate mode is what makes an
+    // update crawl, so every write leaves it first.
+    RLCD_SendCommand(enabled ? 0x39 : 0x38);
+    LowPowerIdle = enabled;
 }
 
 void DisplayPort::RLCD_Reset(void) {

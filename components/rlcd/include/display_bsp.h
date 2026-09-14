@@ -29,6 +29,13 @@ class DisplayPort {
     int                 height_;
     uint8_t            *DispBuffer = NULL;
     int                 DisplayLen;
+    // What the panel is currently showing, so a redraw can send only the part
+    // that actually changed. Null until the first full write succeeds.
+    uint8_t            *ShadowBuffer = NULL;
+    // Gathers a sub-rectangle into one contiguous run, because the rows of a
+    // window are 75 bytes apart in DispBuffer and SPI wants a single transfer.
+    uint8_t            *WindowBuffer = NULL;
+    bool                LowPowerIdle = false;
 #if (AlgorithmOptimization == 3)
 	uint16_t (*PixelIndexLUT)[300];
 	uint8_t  (*PixelBitLUT  )[300];
@@ -48,6 +55,12 @@ class DisplayPort {
     void RLCD_Init();
     void RLCD_ColorClear(uint8_t color);
     void RLCD_Display();
+    // Sends only the bytes that differ from what the panel already shows, and
+    // nothing at all when the frame is unchanged. Returns the bytes written.
+    int  RLCD_DisplayChanged();
+    // ST7305 runs its own refresh; the low power mode drops it to about 1 Hz,
+    // which suits a screen that changes once a minute.
+    void RLCD_SetLowPower(bool enabled);
 	#if (AlgorithmOptimization != 3)
     void RLCD_SetPortraitPixel(uint16_t x, uint16_t y, uint8_t color);      //竖屏显示
     void RLCD_SetLandscapePixel(uint16_t x, uint16_t y, uint8_t color);     //横屏显示
