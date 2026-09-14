@@ -65,13 +65,19 @@ fn icon() -> Option<Icon> {
     Icon::from_rgba(rgba, SIZE, SIZE).ok()
 }
 
-// Opens a path with whatever Windows associates with it. `start` needs an empty
-// first argument, which it treats as the window title, or a quoted path would
-// be taken for one.
-fn open(path: &PathBuf) {
-    let _ = Command::new("cmd")
-        .args(["/C", "start", "", &path.to_string_lossy()])
-        .spawn();
+// Notepad rather than the file association: .log and .yaml commonly have no
+// handler registered, and `start` then does nothing at all and still reports
+// success, which is the worst of both.
+fn open_text(path: &PathBuf) {
+    if let Err(error) = Command::new("notepad.exe").arg(path).spawn() {
+        eprintln!("Could not open {}: {error}", path.display());
+    }
+}
+
+fn open_folder(path: &PathBuf) {
+    if let Err(error) = Command::new("explorer.exe").arg(path).spawn() {
+        eprintln!("Could not open {}: {error}", path.display());
+    }
 }
 
 /// Runs the icon and its message loop until the menu asks to quit. Blocks, so
@@ -79,12 +85,12 @@ fn open(path: &PathBuf) {
 pub fn run(log: PathBuf, config: PathBuf) {
     let open_log = MenuItem::new("Open log", true, None);
     let open_config = MenuItem::new("Edit config", true, None);
-    let open_folder = MenuItem::new("Open folder", true, None);
+    let folder_item = MenuItem::new("Open folder", true, None);
     let quit = MenuItem::new("Quit collector", true, None);
     let menu = Menu::new();
     let separator = PredefinedMenuItem::separator();
     if menu
-        .append_items(&[&open_log, &open_config, &open_folder, &separator, &quit])
+        .append_items(&[&open_log, &open_config, &folder_item, &separator, &quit])
         .is_err()
     {
         return;
@@ -122,11 +128,11 @@ pub fn run(log: PathBuf, config: PathBuf) {
         }
         while let Ok(event) = menu_events.try_recv() {
             if event.id == open_log.id() {
-                open(&log);
+                open_text(&log);
             } else if event.id == open_config.id() {
-                open(&config);
-            } else if event.id == open_folder.id() {
-                open(&folder);
+                open_text(&config);
+            } else if event.id == folder_item.id() {
+                open_folder(&folder);
             } else if event.id == quit.id() {
                 QUIT.store(true, Ordering::Relaxed);
                 return;

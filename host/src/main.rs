@@ -230,10 +230,15 @@ async fn main() -> Result<()> {
     // one with the async runtime.
     #[cfg(windows)]
     {
+        // Absolute, because the menu hands these to other programs whose working
+        // directory is not this one.
+        let here = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let root = env::var_os("RLCD_CONFIG")
             .map(PathBuf::from)
             .and_then(|path| path.parent().map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("."));
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| if path.is_absolute() { path } else { here.join(path) })
+            .unwrap_or(here);
         let log = root.join("rlcd-host.log");
         let config = root.join("config.yaml");
         std::thread::spawn(move || tray::run(log, config));
