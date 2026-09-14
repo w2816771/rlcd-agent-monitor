@@ -305,13 +305,32 @@ async fn bluetooth_adapter() -> Result<Adapter> {
         .context("no Bluetooth adapter found")
 }
 
+// Connects and discovers, so a caller can treat a stale peripheral as one
+// failure rather than three separate ones.
+async fn attach(peripheral: &Peripheral) -> Result<()> {
+    let is_connected = timeout(Duration::from_secs(2), peripheral.is_connected())
+        .await
+        .context("Bluetooth state check timed out")??;
+    if !is_connected {
+        timeout(Duration::from_secs(10), peripheral.connect())
+            .await
+            .context("Bluetooth connection timed out")??;
+    }
+    timeout(Duration::from_secs(10), peripheral.discover_services())
+        .await
+        .context("Bluetooth service discovery timed out")??;
+    Ok(())
+}
+
 async fn find_and_connect(
     adapter: &Adapter,
     uuid: Uuid,
     button_uuid: Uuid,
 ) -> Result<(Peripheral, Characteristic, Option<Characteristic>)> {
     adapter.start_scan(ScanFilter::default()).await?;
-    for _ in 0..20 {
+    // Long enough to outlast a board reboot, since the operating system keeps
+    // offering the stale peripheral for a while after one.
+    for _ in 0..40 {
         for peripheral in adapter.peripherals().await? {
             let properties = timeout(Duration::from_secs(2), peripheral.properties())
                 .await
@@ -320,18 +339,17 @@ async fn find_and_connect(
             if !is_target {
                 continue;
             }
-            adapter.stop_scan().await?;
-            let is_connected = timeout(Duration::from_secs(2), peripheral.is_connected())
-                .await
-                .context("Bluetooth state check timed out")??;
-            if !is_connected {
-                timeout(Duration::from_secs(10), peripheral.connect())
-                    .await
-                    .context("Bluetooth connection timed out")??;
+            // A failure here is usually a peripheral the operating system still
+            // has cached from before the board rebooted. Connecting to that
+            // stale handle fails with "Not connected" forever, so the handle is
+            // dropped and the scan carries on rather than the error escaping to
+            // the caller, which would only find the same cached entry again.
+            if let Err(error) = attach(&peripheral).await {
+                eprintln!("{DEVICE_NAME} found but not reachable: {error:#}; rescanning");
+                let _ = timeout(Duration::from_secs(3), peripheral.disconnect()).await;
+                continue;
             }
-            timeout(Duration::from_secs(10), peripheral.discover_services())
-                .await
-                .context("Bluetooth service discovery timed out")??;
+            adapter.stop_scan().await?;
             let characteristics = peripheral.characteristics();
             let characteristic = characteristics
                 .iter()
