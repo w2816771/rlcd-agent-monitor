@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "debug_log.h"
 #include "rlcd_fonts.h"
 
 namespace {
@@ -110,10 +111,9 @@ void MonitorUi::create(const MonitorModel &model) {
     create_overview(model);
     create_system(model);
     create_activity(model);
-    create_processes(model);
     create_news(model);
-    create_sound(model);
     create_devices(model);
+    create_debug(model);
     for (int i = 0; i < kPageCount; ++i) if (i != current_page_) lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -171,54 +171,86 @@ void MonitorUi::create_overview(const MonitorModel &m) {
         text(pages_[0], values[i], x[i], 205, &rlcd_font_bold_26, WHITE);
         text(pages_[0], names[i], x[i] + 8, 248, &rlcd_font_bold_14, WHITE);
     }
+    // The sound page folded into this cell. Every second window is drawn, two
+    // pixels wide, which is half the objects of a full history for a trend that
+    // reads the same at this size.
     rule(pages_[0], 294, 201, 1, 67, WHITE);
-    text(pages_[0], "SOUND", 310, 248, &rlcd_font_bold_14, WHITE);
-    lv_obj_t *sound = lv_bar_create(pages_[0]);
-    lv_obj_set_pos(sound, 307, 215); lv_obj_set_size(sound, 80, 16);
-    lv_bar_set_range(sound, 20, 100); lv_bar_set_value(sound, m.noise_db ? m.noise_db : 20, LV_ANIM_OFF);
-    lv_obj_set_style_radius(sound, 0, LV_PART_MAIN); lv_obj_set_style_radius(sound, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(sound, BLACK, LV_PART_MAIN); lv_obj_set_style_border_color(sound, WHITE, LV_PART_MAIN);
-    lv_obj_set_style_border_width(sound, 2, LV_PART_MAIN); lv_obj_set_style_bg_color(sound, WHITE, LV_PART_INDICATOR);
+    const AudioLevels &n = m.noise;
+    lv_obj_t *peak = text(pages_[0], "SOUND", 310, 248, &rlcd_font_bold_14, WHITE);
+    if (n.peak) lv_label_set_text_fmt(peak, "PEAK %u", n.peak);
+    constexpr int kFloor = 20;
+    constexpr int kRange = 80;
+    constexpr int kSparkHeight = 38;
+    constexpr int kSparkTop = 205;
+    constexpr int kSparkBars = 32;
+    const int shown = std::min<int>(static_cast<int>(n.filled), static_cast<int>(kNoiseHistory));
+    // Newest on the right, so the bars march the way the history grows.
+    for (int i = 0; i < kSparkBars; ++i) {
+        const int sample = shown - 1 - (kSparkBars - 1 - i) * 2;
+        if (sample < 0) continue;
+        const int level = std::clamp(static_cast<int>(n.history[sample]) - kFloor, 1, kRange);
+        const int height = level * kSparkHeight / kRange;
+        panel(pages_[0], 305 + i * 2, kSparkTop + kSparkHeight - height, 2, height, WHITE);
+    }
+    if (!shown) text(pages_[0], "LISTENING", 305, 218, &rlcd_font_bold_14, WHITE);
     footer(pages_[0], "BOOT: BACK", "KEY: NEXT");
 }
 
 void MonitorUi::create_system(const MonitorModel &m) {
     pages_[1] = lv_obj_create(lv_screen_active()); base(pages_[1], "HOST SYSTEM", 2); source_tag(pages_[1], m);
-    lv_obj_t *card = panel(pages_[1], 0, 32, 400, 202);
+    lv_obj_t *card = panel(pages_[1], 0, 32, 400, 128);
     char value[24];
-    text(card, "CPU USAGE", 12, 10, &rlcd_font_bold_18);
+    text(card, "CPU USAGE", 12, 6, &rlcd_font_bold_18);
     snprintf(value, sizeof(value), "%u%%", m.cpu_percent);
-    lv_obj_t *cpu = text(card, value, 0, 3, &rlcd_font_bold_40);
-    lv_obj_set_width(cpu, 100); lv_obj_set_style_text_align(cpu, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(cpu, LV_ALIGN_TOP_RIGHT, -12, 3);
-    usage_bar(card, 12, 56, 376, m.cpu_percent);
-    rule(card, 0, 94, 400);
-    text(card, "RAM USAGE", 12, 104, &rlcd_font_bold_18);
+    lv_obj_t *cpu = text(card, value, 0, 2, &rlcd_font_bold_26);
+    lv_obj_set_width(cpu, 100); lv_obj_set_style_text_align(cpu, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(cpu, LV_ALIGN_TOP_RIGHT, -12, 2);
+    usage_bar(card, 12, 32, 376, m.cpu_percent);
+    rule(card, 0, 54, 400);
+    text(card, "RAM USAGE", 12, 60, &rlcd_font_bold_18);
     snprintf(value, sizeof(value), "%u%%", m.ram_percent);
-    lv_obj_t *ram = text(card, value, 0, 97, &rlcd_font_bold_40);
-    lv_obj_set_width(ram, 100); lv_obj_set_style_text_align(ram, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(ram, LV_ALIGN_TOP_RIGHT, -12, 97);
-    usage_bar(card, 12, 150, 376, m.ram_percent);
+    lv_obj_t *ram = text(card, value, 0, 56, &rlcd_font_bold_26);
+    lv_obj_set_width(ram, 100); lv_obj_set_style_text_align(ram, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(ram, LV_ALIGN_TOP_RIGHT, -12, 56);
+    usage_bar(card, 12, 86, 376, m.ram_percent);
     snprintf(value, sizeof(value), "%.1f / %.0f GB", m.ram_used_gb, m.ram_total_gb);
-    text(card, value, 12, 176, &rlcd_font_bold_14);
-    snprintf(value, sizeof(value), "%.1fG", m.swap_used_gb);
-    lv_obj_t *swap_label = text(card, "SWAP", 0, 178, &rlcd_font_bold_14);
-    lv_obj_set_width(swap_label, 250); lv_obj_set_style_text_align(swap_label, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(swap_label, LV_ALIGN_BOTTOM_RIGHT, -64, -8);
-    lv_obj_t *swap = text(card, value, 0, 178, &rlcd_font_bold_14);
-    lv_obj_set_width(swap, 160); lv_obj_set_style_text_align(swap, LV_TEXT_ALIGN_RIGHT, 0); lv_obj_align(swap, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
+    text(card, value, 12, 106, &rlcd_font_bold_14);
+    snprintf(value, sizeof(value), "SWAP %.1fG", m.swap_used_gb);
+    lv_obj_t *swap = text(card, value, 0, 106, &rlcd_font_bold_14);
+    lv_obj_set_width(swap, 180); lv_obj_set_style_text_align(swap, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(swap, LV_ALIGN_TOP_RIGHT, -12, 106);
 
-    lv_obj_t *net = panel(pages_[1], 0, 238, 400, 38);
-    text(net, "NET", 12, 11, &rlcd_font_bold_14);
+    lv_obj_t *net = panel(pages_[1], 0, 164, 400, 28);
+    text(net, "NET", 12, 6, &rlcd_font_bold_14);
     char down[20]; char up[20];
     format_rate(down, sizeof(down), "DN", m.net_down_kbs);
     format_rate(up, sizeof(up), "UP", m.net_up_kbs);
-    text(net, down, 54, 11, &rlcd_font_bold_14);
-    text(net, up, 186, 11, &rlcd_font_bold_14);
-    lv_obj_t *mode = text(net, m.usb_connected ? "FULL" : "POWER SAVE", 0, 11, &rlcd_font_bold_14);
+    text(net, down, 54, 6, &rlcd_font_bold_14);
+    text(net, up, 186, 6, &rlcd_font_bold_14);
+    lv_obj_t *mode = text(net, m.usb_connected ? "FULL" : "POWER SAVE", 0, 6, &rlcd_font_bold_14);
     lv_obj_set_width(mode, 150); lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(mode, LV_ALIGN_RIGHT_MID, -12, 0);
-    footer(pages_[1], "BOOT: BACK", "HOLD KEY: SOURCE");
-}
 
+    // The top processes page folded in here. Three rows rather than four, so
+    // the load figures above keep the space that makes them readable.
+    constexpr int kRows = 3;
+    for (int i = 0; i < kRows; ++i) {
+        const ProcessUsage &process = m.processes[i];
+        lv_obj_t *row = panel(pages_[1], 0, 196 + i * 27, 400, 25);
+        lv_obj_t *name = text(row, process.name.empty() ? "-" : process.name.c_str(), 12, 3, &rlcd_font_bold_18);
+        lv_obj_set_width(name, 210); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
+        char meta[24]; snprintf(meta, sizeof(meta), "%.1fG", process.ram_mb / 1024.0f);
+        lv_obj_t *ram_text = text(row, meta, 0, 5, &rlcd_font_bold_14);
+        lv_obj_set_width(ram_text, 90); lv_obj_set_style_text_align(ram_text, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(ram_text, LV_ALIGN_TOP_RIGHT, -74, 5);
+        char cpu_text[16]; snprintf(cpu_text, sizeof(cpu_text), "%.0f%%", process.cpu_percent);
+        lv_obj_t *process_cpu = text(row, cpu_text, 0, 3, &rlcd_font_bold_18);
+        lv_obj_set_width(process_cpu, 66); lv_obj_set_style_text_align(process_cpu, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(process_cpu, LV_ALIGN_TOP_RIGHT, -12, 3);
+    }
+    char count[28]; snprintf(count, sizeof(count), "TOP %d OF %u", kRows, m.process_count);
+    footer(pages_[1], count, "HOLD KEY: SOURCE");
+}
 void MonitorUi::create_activity(const MonitorModel &m) {
     pages_[2] = lv_obj_create(lv_screen_active()); base(pages_[2], "AGENT USAGE", 3); source_tag(pages_[2], m);
     lv_obj_t *total = panel(pages_[2], 0, 32, 400, 98);
@@ -241,30 +273,11 @@ void MonitorUi::create_activity(const MonitorModel &m) {
     footer(pages_[2], "24H LOCAL LOGS", "CODEX + CLAUDE");
 }
 
-void MonitorUi::create_processes(const MonitorModel &m) {
-    pages_[3] = lv_obj_create(lv_screen_active()); base(pages_[3], "TOP - BY CPU", 4); source_tag(pages_[3], m);
-    for (int i = 0; i < 4; ++i) {
-        const ProcessUsage &p = m.processes[i];
-        lv_obj_t *row = panel(pages_[3], 0, 32 + i * 60, 400, 58);
-        lv_obj_t *name = text(row, p.name.empty() ? "-" : p.name.c_str(), 11, 5, &rlcd_font_bold_26);
-        lv_obj_set_width(name, 260); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
-        char process_meta[32]; snprintf(process_meta, sizeof(process_meta), "%.1fG - %.1f%%", p.ram_mb / 1024.0f,
-                                        m.ram_total_gb > 0 ? p.ram_mb / 1024.0f * 100.0f / m.ram_total_gb : 0.0f);
-        text(row, "RAM", 12, 38, &rlcd_font_bold_14); text(row, process_meta, 50, 38, &rlcd_font_bold_14);
-        char process_cpu[16]; snprintf(process_cpu, sizeof(process_cpu), "%.0f%%", p.cpu_percent);
-        lv_obj_t *cpu = text(row, process_cpu, 0, 6, &rlcd_font_bold_40);
-        lv_obj_set_width(cpu, 120); lv_obj_set_style_text_align(cpu, LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_align(cpu, LV_ALIGN_TOP_RIGHT, -10, 5);
-    }
-    char count[24]; snprintf(count, sizeof(count), "4 OF %u", m.process_count);
-    footer(pages_[3], count, "CPU + RAM");
-}
-
 void MonitorUi::create_news(const MonitorModel &m) {
-    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "TECH NEWS", 5); source_tag(pages_[4], m);
+    pages_[3] = lv_obj_create(lv_screen_active()); base(pages_[3], "TECH NEWS", 4); source_tag(pages_[3], m);
     for (int i = 0; i < 4; ++i) {
         int index = news_page_ * 4 + i;
-        lv_obj_t *row = panel(pages_[4], 0, 32 + i * 60, 400, 58);
+        lv_obj_t *row = panel(pages_[3], 0, 32 + i * 60, 400, 58);
         lv_obj_t *headline = text(row, m.headlines[index].c_str(), 10, 6, &rlcd_font_bold_18);
         lv_obj_set_width(headline, 325); lv_obj_set_height(headline, 48);
         lv_label_set_long_mode(headline, LV_LABEL_LONG_WRAP);
@@ -273,58 +286,17 @@ void MonitorUi::create_news(const MonitorModel &m) {
         lv_obj_align(age, LV_ALIGN_RIGHT_MID, -9, 0);
     }
     char page[32]; snprintf(page, sizeof(page), "%d OF 2 PAGES", news_page_ + 1);
-    footer(pages_[4], page, "HOLD KEY: MORE");
-}
-
-void MonitorUi::create_sound(const MonitorModel &m) {
-    pages_[5] = lv_obj_create(lv_screen_active()); base(pages_[5], "SOUND", 6);
-    const AudioLevels &n = m.noise;
-
-    lv_obj_t *card = panel(pages_[5], 0, 32, 400, 84);
-    lv_obj_t *value = text(card, "--", 12, -2, &rlcd_font_bold_72);
-    if (n.current) lv_label_set_text_fmt(value, "%u", n.current);
-    text(card, "DB SPL", 150, 44, &rlcd_font_bold_18);
-    const char *names[] = {"MIN", "AVG", "MAX", "PEAK"};
-    const uint8_t stats[] = {n.minimum, n.average, n.maximum, n.peak};
-    for (int i = 0; i < 4; ++i) {
-        const int x = 236 + (i % 2) * 84;
-        const int y = 8 + (i / 2) * 38;
-        text(card, names[i], x, y, &rlcd_font_bold_14);
-        lv_obj_t *item = text(card, "--", x, y + 15, &rlcd_font_bold_18);
-        if (stats[i]) lv_label_set_text_fmt(item, "%u", stats[i]);
-    }
-
-    // One bar per measured window, oldest on the left. The scale is fixed so a
-    // quiet room and a loud one are comparable at a glance.
-    constexpr int kFloor = 20;
-    constexpr int kRange = 80;
-    constexpr int kGraphHeight = 138;
-    lv_obj_t *graph = panel(pages_[5], 0, 120, 400, kGraphHeight);
-    for (int line = 1; line < 4; ++line) {
-        rule(graph, 0, kGraphHeight - line * kGraphHeight / 4, 400);
-    }
-    const int bar_width = 5;
-    for (size_t i = 0; i < n.filled && i < kNoiseHistory; ++i) {
-        const int level = std::clamp(static_cast<int>(n.history[i]) - kFloor, 1, kRange);
-        const int height = level * (kGraphHeight - 4) / kRange;
-        panel(graph, 9 + static_cast<int>(i) * (bar_width + 1), kGraphHeight - height, bar_width,
-              height, BLACK);
-    }
-    if (!n.filled) text(graph, "LISTENING", 12, 8, &rlcd_font_bold_18);
-
-    char span[28];
-    snprintf(span, sizeof(span), "%u WINDOWS", static_cast<unsigned>(n.filled));
-    footer(pages_[5], span, "BOOT: BACK");
+    footer(pages_[3], page, "HOLD KEY: MORE");
 }
 
 void MonitorUi::create_devices(const MonitorModel &m) {
-    pages_[6] = lv_obj_create(lv_screen_active()); base(pages_[6], "DEVICES", 7);
+    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "DEVICES", 5);
     int rows = 0;
     int live = 0;
     for (const SourceStatus &source : m.sources) {
         if (!source.has_data) continue;
         if (source.connected) ++live;
-        lv_obj_t *row = panel(pages_[6], 0, 32 + rows * 78, 400, 74);
+        lv_obj_t *row = panel(pages_[4], 0, 32 + rows * 78, 400, 74);
         if (source.shown) rule(row, 0, 0, 8, 74);
         lv_obj_t *name = text(row, source.name.c_str(), 20, 6, &rlcd_font_bold_26);
         lv_obj_set_width(name, 260); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
@@ -352,10 +324,45 @@ void MonitorUi::create_devices(const MonitorModel &m) {
         lv_obj_align(state, LV_ALIGN_RIGHT_MID, -10, 0);
         ++rows;
     }
-    if (!rows) text(pages_[6], "WAITING FOR A HOST", 12, 48, &rlcd_font_bold_18, WHITE);
+    if (!rows) text(pages_[4], "WAITING FOR A HOST", 12, 48, &rlcd_font_bold_18, WHITE);
     char count[24];
     snprintf(count, sizeof(count), "%d LIVE OF %d", live, rows);
-    footer(pages_[6], "HOLD KEY: SWITCH", count);
+    footer(pages_[4], "HOLD KEY: SWITCH", count);
+}
+
+void MonitorUi::create_debug(const MonitorModel &m) {
+    pages_[5] = lv_obj_create(lv_screen_active()); base(pages_[5], "DEBUG LOG", 6);
+    (void)m;
+    const int total_lines = static_cast<int>(debug_log_count());
+    // Newest at the bottom, the way a terminal reads. Without scrolling the
+    // view sits at the end, so the latest line is always the one on screen.
+    constexpr int kVisible = 11;
+    const int max_scroll = total_lines > kVisible ? total_lines - kVisible : 0;
+    if (debug_scroll_ > max_scroll) debug_scroll_ = max_scroll;
+    if (debug_scroll_ < 0) debug_scroll_ = 0;
+    const int first = max_scroll - debug_scroll_;
+    lv_obj_t *card = panel(pages_[5], 0, 32, 400, 244);
+    if (!total_lines) {
+        text(card, "NO LOG LINES YET", 12, 10, &rlcd_font_bold_18);
+    }
+    char line[kLogLineChars];
+    for (int i = 0; i < kVisible; ++i) {
+        const int index = first + i;
+        if (index >= total_lines) break;
+        debug_log_copy(static_cast<std::size_t>(index), line, sizeof(line));
+        lv_obj_t *row = text(card, line, 8, 6 + i * 21, &rlcd_font_bold_14);
+        lv_obj_set_width(row, 384);
+        lv_label_set_long_mode(row, LV_LABEL_LONG_CLIP);
+    }
+    char position[32];
+    if (total_lines) {
+        snprintf(position, sizeof(position), "%d-%d OF %lu", first + 1,
+                 (first + kVisible < total_lines) ? first + kVisible : total_lines,
+                 debug_log_total());
+    } else {
+        snprintf(position, sizeof(position), "0 LINES");
+    }
+    footer(pages_[5], position, max_scroll ? "HOLD KEY: SCROLL" : "BOOT: BACK");
 }
 
 void MonitorUi::show_next() {
@@ -381,10 +388,23 @@ void MonitorUi::show_home() {
 }
 
 void MonitorUi::handle_long_press(const MonitorModel &m) {
-    if (current_page_ != 4) return;
-    news_page_ = 1 - news_page_;
-    lv_obj_delete(pages_[4]); pages_[4] = nullptr;
-    create_news(m); lv_obj_invalidate(pages_[4]);
+    if (current_page_ == kPageNews) {
+        news_page_ = 1 - news_page_;
+        lv_obj_delete(pages_[kPageNews]); pages_[kPageNews] = nullptr;
+        create_news(m); lv_obj_invalidate(pages_[kPageNews]);
+        return;
+    }
+    if (current_page_ == kPageDebug) {
+        // One screen older each time, wrapping back to the newest at the end,
+        // since two buttons leave no room for a separate scroll-up.
+        const int total_lines = static_cast<int>(debug_log_count());
+        constexpr int kVisible = 11;
+        const int max_scroll = total_lines > kVisible ? total_lines - kVisible : 0;
+        debug_scroll_ = (debug_scroll_ + kVisible > max_scroll) ? 0 : debug_scroll_ + kVisible;
+        lv_obj_delete(pages_[kPageDebug]); pages_[kPageDebug] = nullptr;
+        create_debug(m); lv_obj_invalidate(pages_[kPageDebug]);
+        return;
+    }
 }
 
 void MonitorUi::update(const MonitorModel &m) {

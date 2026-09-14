@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 
+#include "debug_log.h"
 #include "display_bsp.h"
 #include "board_sensors.h"
 #include "audio_meter.h"
@@ -47,7 +48,14 @@ void flush(lv_display_t *disp, const lv_area_t *area, uint8_t *pixels) {
             display.RLCD_SetPixel(x, y, luminance < 128 ? ColorBlack : ColorWhite);
         }
     }
-    display.RLCD_Display();
+    // Only the changed band reaches the panel, and an unchanged frame sends
+    // nothing at all, which is the common case when a label was rebuilt with
+    // the same text.
+    display.RLCD_DisplayChanged();
+    // RLCD_SetLowPower(true) belongs here, but 0x39 is read from the MIPI idle
+    // mode convention rather than a datasheet to hand, so it is enabled only
+    // once the layout above is confirmed good on the panel. One change at a
+    // time is the difference between a bug and a mystery.
     lv_display_flush_ready(disp);
 }
 
@@ -90,6 +98,7 @@ void lvgl_task(void *) {
     bool last_connected = false;
     int64_t last_sensor_update = 0;
     uint32_t last_stale_minutes = 0;
+    unsigned long last_log_total = 0;
     auto apply_sources = [](MonitorModel &target) {
         target.sources = monitor_ble_sources();
         target.source_live = false;
@@ -121,7 +130,8 @@ void lvgl_task(void *) {
             // KEY held flips headlines on the news page and switches the shown
             // source everywhere else. A switch is not forwarded as a button
             // event, so a command mapped to KEY held cannot fire on every switch.
-            if (ui.current_page() == 4) {
+            if (ui.current_page() == MonitorUi::kPageNews ||
+                ui.current_page() == MonitorUi::kPageDebug) {
                 monitor_ble_notify_button(2, page);
                 ui.handle_long_press(model);
             } else {
@@ -134,11 +144,11 @@ void lvgl_task(void *) {
         // The same connection already holds light sleep off, so the mode only
         // has to decide how often the board wakes to do work.
         const bool usb = usb_serial_jtag_is_connected();
-        // The sound page is a live graph, so while it is on screen and the
-        // board is not on battery the loop refreshes far more often.
-        const bool watching_sound = ui.current_page() == 5;
-        const bool watching_devices = ui.current_page() == 6;
-        const int64_t sensor_period = usb ? (watching_sound ? 3000000 : 10000000) : 60000000;
+        // The debug log is the only page that changes on its own between
+        // snapshots, so it alone earns a faster refresh, and only on USB.
+        const bool watching_debug = ui.current_page() == MonitorUi::kPageDebug;
+        const bool watching_devices = ui.current_page() == MonitorUi::kPageDevices;
+        const int64_t sensor_period = usb ? (watching_debug ? 3000000 : 10000000) : 60000000;
         audio_meter_set_period_ms(usb ? 2000 : 30000);
         const uint32_t wait_floor = usb ? 20 : 50;
         const uint32_t wait_ceiling = usb ? 50 : 150;
@@ -185,12 +195,16 @@ void lvgl_task(void *) {
             const int noise_delta = static_cast<int>(model.noise_db) - static_cast<int>(noise);
             if (noise && (noise_delta <= -3 || noise_delta >= 3)) { model.noise_db = noise; changed = true; }
             model.noise = audio_meter_levels();
-            if (watching_sound) changed = true;
             apply_sources(model);
             // The devices page lists live signal and update age, and a stale
             // header counts up in minutes, so both need periodic redraws.
             const uint32_t stale_minutes = model.source_live ? 0 : model.source_age_seconds / 60;
             if (watching_devices || stale_minutes != last_stale_minutes) changed = true;
+            // New lines only reach the screen if something asks for a redraw.
+            if (watching_debug && debug_log_total() != last_log_total) {
+                last_log_total = debug_log_total();
+                changed = true;
+            }
             last_stale_minutes = stale_minutes;
             if (changed) ui.update(model);
         }
@@ -204,6 +218,9 @@ void lvgl_task(void *) {
 }
 
 extern "C" void app_main() {
+    // Installed before the first log line, so the debug page can show the whole
+    // boot sequence and not just what happened after the UI came up.
+    debug_log_init();
     ESP_LOGI("agent-monitor", "Starting 400x300 RLCD agent monitor");
 
     // Automatic light sleep is not implied by dynamic frequency scaling; it has
