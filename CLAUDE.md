@@ -100,6 +100,9 @@ since the display fonts have no glyphs for anything else.
 
 ## BLE protocol
 
+The full host contract, including the snapshot schema and how every field is
+derived, is in `docs/host-api.md`. Keep it in sync when either side changes.
+
 Service `7a1e0001-7e57-4d6d-8a1b-2c3d4e5f6071`, telemetry characteristic
 `7a1e0002-...6071`, write-without-response. Each write is a 4-byte header
 (protocol version, message id, chunk index, chunk count) followed by 16 payload
