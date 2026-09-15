@@ -113,6 +113,7 @@ void MonitorUi::create(const MonitorModel &model) {
     create_system(model);
     create_activity(model);
     create_news(model);
+    create_todo(model);
     create_devices(model);
     create_debug(model);
     for (int i = 0; i < kPageCount; ++i) if (i != current_page_) lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
@@ -330,14 +331,50 @@ void MonitorUi::create_news(const MonitorModel &m) {
     footer(pages_[3], page, "HOLD KEY: MORE");
 }
 
+void MonitorUi::create_todo(const MonitorModel &m) {
+    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "TODO", 5); source_tag(pages_[4], m);
+    const std::size_t rows = std::min(m.todo_rows, m.todos.size());
+    lv_obj_t *card = panel(pages_[4], 0, 32, 400, 244);
+    if (!rows) text(card, "NOTHING LISTED", 12, 10, &rlcd_font_bold_18);
+    int overdue = 0;
+    for (std::size_t i = 0; i < rows; ++i) {
+        const TodoItem &item = m.todos[i];
+        const int y = 6 + static_cast<int>(i) * 30;
+        char number[8]; snprintf(number, sizeof(number), "%u.", static_cast<unsigned>(i + 1));
+        text(card, number, 12, y + 2, &rlcd_font_bold_18);
+        lv_obj_t *line = text(card, item.text.c_str(), 40, y + 2, &rlcd_font_bold_18);
+        lv_obj_set_width(line, 250); lv_label_set_long_mode(line, LV_LABEL_LONG_CLIP);
+        // The remaining time reads as a person would say it, and turns to a
+        // minus once the deadline has passed rather than vanishing.
+        char remaining[16] = "";
+        if (item.has_due) {
+            const int minutes = item.due_min;
+            const int magnitude = minutes < 0 ? -minutes : minutes;
+            const char *sign = minutes < 0 ? "-" : "";
+            if (magnitude >= 1440) snprintf(remaining, sizeof(remaining), "%s%dD %dH", sign, magnitude / 1440, (magnitude % 1440) / 60);
+            else if (magnitude >= 60) snprintf(remaining, sizeof(remaining), "%s%dH %02dM", sign, magnitude / 60, magnitude % 60);
+            else snprintf(remaining, sizeof(remaining), "%s%dM", sign, magnitude);
+            if (minutes < 0) ++overdue;
+        }
+        lv_obj_t *due = text(card, remaining, 0, y + 4, &rlcd_font_bold_14);
+        lv_obj_set_width(due, 90); lv_obj_set_style_text_align(due, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(due, LV_ALIGN_TOP_RIGHT, -12, y + 4);
+        if (i + 1 < rows) rule(card, 12, y + 27, 376);
+    }
+    char count[32];
+    if (overdue) snprintf(count, sizeof(count), "%u ITEMS, %d OVERDUE", static_cast<unsigned>(rows), overdue);
+    else snprintf(count, sizeof(count), "%u ITEMS", static_cast<unsigned>(rows));
+    footer(pages_[4], count, "FROM CONFIG");
+}
+
 void MonitorUi::create_devices(const MonitorModel &m) {
-    pages_[4] = lv_obj_create(lv_screen_active()); base(pages_[4], "DEVICES", 5);
+    pages_[5] = lv_obj_create(lv_screen_active()); base(pages_[5], "DEVICES", 6);
     int rows = 0;
     int live = 0;
     for (const SourceStatus &source : m.sources) {
         if (!source.has_data) continue;
         if (source.connected) ++live;
-        lv_obj_t *row = panel(pages_[4], 0, 32 + rows * 78, 400, 74);
+        lv_obj_t *row = panel(pages_[5], 0, 32 + rows * 78, 400, 74);
         if (source.shown) rule(row, 0, 0, 8, 74);
         lv_obj_t *name = text(row, source.name.c_str(), 20, 6, &rlcd_font_bold_26);
         lv_obj_set_width(name, 260); lv_label_set_long_mode(name, LV_LABEL_LONG_CLIP);
@@ -365,14 +402,14 @@ void MonitorUi::create_devices(const MonitorModel &m) {
         lv_obj_align(state, LV_ALIGN_RIGHT_MID, -10, 0);
         ++rows;
     }
-    if (!rows) text(pages_[4], "WAITING FOR A HOST", 12, 48, &rlcd_font_bold_18, WHITE);
+    if (!rows) text(pages_[5], "WAITING FOR A HOST", 12, 48, &rlcd_font_bold_18, WHITE);
     char count[24];
     snprintf(count, sizeof(count), "%d LIVE OF %d", live, rows);
-    footer(pages_[4], "HOLD KEY: SWITCH", count);
+    footer(pages_[5], "HOLD KEY: SWITCH", count);
 }
 
 void MonitorUi::create_debug(const MonitorModel &m) {
-    pages_[5] = lv_obj_create(lv_screen_active()); base(pages_[5], "DEBUG LOG", 6);
+    pages_[6] = lv_obj_create(lv_screen_active()); base(pages_[6], "DEBUG LOG", 7);
     (void)m;
     const int total_lines = static_cast<int>(debug_log_count());
     // Newest at the bottom, the way a terminal reads. Without scrolling the
@@ -382,7 +419,7 @@ void MonitorUi::create_debug(const MonitorModel &m) {
     if (debug_scroll_ > max_scroll) debug_scroll_ = max_scroll;
     if (debug_scroll_ < 0) debug_scroll_ = 0;
     const int first = max_scroll - debug_scroll_;
-    lv_obj_t *card = panel(pages_[5], 0, 32, 400, 244);
+    lv_obj_t *card = panel(pages_[6], 0, 32, 400, 244);
     if (!total_lines) {
         text(card, "NO LOG LINES YET", 12, 10, &rlcd_font_bold_18);
     }
@@ -403,7 +440,35 @@ void MonitorUi::create_debug(const MonitorModel &m) {
     } else {
         snprintf(position, sizeof(position), "0 LINES");
     }
-    footer(pages_[5], position, max_scroll ? "HOLD KEY: SCROLL" : "BOOT: BACK");
+    footer(pages_[6], position, max_scroll ? "HOLD KEY: SCROLL" : "BOOT: BACK");
+}
+
+void MonitorUi::show_alert(const char *title) {
+    hide_alert();
+    // The top layer sits above every screen, so the box survives the pages
+    // being deleted and rebuilt under it on the next snapshot.
+    lv_obj_t *box = panel(lv_layer_top(), 30, 60, 340, 180, WHITE);
+    lv_obj_set_style_border_color(box, BLACK, 0);
+    lv_obj_set_style_border_width(box, 4, 0);
+    rule(box, 0, 40, 340, 3, BLACK);
+    lv_obj_t *label = text(box, "ALERT", 0, 8, &rlcd_font_bold_18);
+    lv_obj_set_width(label, 340); lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t *what = text(box, title, 12, 54, &rlcd_font_bold_26);
+    lv_obj_set_width(what, 316); lv_obj_set_height(what, 76);
+    lv_obj_set_style_text_align(what, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(what, LV_LABEL_LONG_WRAP);
+    lv_obj_t *hint = text(box, "PRESS ANY BUTTON", 0, 146, &rlcd_font_bold_14);
+    lv_obj_set_width(hint, 340); lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    alert_ = box;
+    lv_obj_invalidate(lv_layer_top());
+}
+
+void MonitorUi::hide_alert() {
+    if (!alert_) return;
+    lv_obj_delete(alert_);
+    alert_ = nullptr;
+    // The area under the box has to be repainted from the page below.
+    if (pages_[current_page_]) lv_obj_invalidate(pages_[current_page_]);
 }
 
 void MonitorUi::show_next() {

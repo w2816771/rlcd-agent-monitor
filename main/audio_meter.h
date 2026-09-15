@@ -28,3 +28,9 @@ void audio_meter_set_period_ms(uint32_t period_ms);
 // dB added to the measured level to reach an approximate SPL. The microphone
 // has no published sensitivity, so this is calibrated against a reference.
 void audio_meter_set_offset_db(float offset_db);
+
+// The microphone and the speaker share the I2S clock pins, so only one may
+// have its channel enabled at a time. The meter holds this while measuring; the
+// player takes it to ring and gives it back when quiet.
+bool audio_meter_take_bus(uint32_t timeout_ms);
+void audio_meter_give_bus();

@@ -40,3 +40,25 @@ device_name: "PC"
 # How often to send while the board is showing a different machine. The board
 # wakes this one immediately when you switch to it.
 hidden_update_seconds: 300
+
+# Reminders. The board shows a box over the current page and rings the speaker
+# until a button is pressed. Times are local. Each entry uses one of:
+#   at: "09:30"        with optional days: [weekdays] / [mon, wed, fri] / [weekends]
+#   every: "45m"       with optional between: "09:00-18:00"
+#   countdown: "25m"   with optional from: "14:00"; edit the file to restart it
+alerts: []
+#  - title: "STAND-UP"
+#    at: "09:30"
+#    days: [weekdays]
+#  - title: "STRETCH"
+#    every: "45m"
+#    between: "09:00-18:00"
+#  - title: "POMODORO"
+#    countdown: "25m"
+
+# Shown on the todo page in this order. A due time is "YYYY-MM-DD HH:MM", or
+# "HH:MM" for today; the board shows the time left and rings once it is due.
+todos: []
+#  - text: "Ship the release"
+#    due: "2026-09-15 18:00"
+#  - text: "Water the plants"

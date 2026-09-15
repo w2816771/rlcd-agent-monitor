@@ -37,6 +37,18 @@ constexpr uint8_t kProcessSortCount = 3;
 // larger than the rows on screen.
 constexpr std::size_t kMaxProcesses = 12;
 
+// One row of the todo page. The host computes the remaining minutes so the
+// board needs no clock of its own.
+struct TodoItem {
+    std::string text;
+    bool has_due = false;
+    int32_t due_min = 0;  // Negative once overdue.
+};
+constexpr std::size_t kMaxTodos = 8;
+// An alert older than this when it arrives is ignored: it is a host that kept
+// sending one the board already dismissed before a reboot.
+constexpr uint32_t kAlertMaxAgeSeconds = 1800;
+
 constexpr std::size_t kMaxSources = 3;
 
 // One connected or remembered host, for the devices page and the header tag.
@@ -89,6 +101,13 @@ struct MonitorModel {
     bool source_live = false;
     uint32_t source_age_seconds = 0;
     std::array<SourceStatus, kMaxSources> sources{};
+    // Todo rows and the ringing alert, both from the host. Trailing and
+    // defaulted, like the fields above, so the demo model stays positional.
+    std::array<TodoItem, kMaxTodos> todos{};
+    std::size_t todo_rows = 0;
+    uint16_t alert_id = 0;  // 0 means nothing is ringing.
+    std::string alert_title;
+    uint32_t alert_age_s = 0;
 };
 
 MonitorModel monitor_demo_model();

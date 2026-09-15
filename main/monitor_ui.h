@@ -7,11 +7,12 @@ public:
     // Overview, host system, agent usage, news, devices, debug. Processes live
     // on the system page and the sound history on the overview, because a page
     // costs button presses on a two button board.
-    static constexpr int kPageCount = 6;
+    static constexpr int kPageCount = 7;
     static constexpr int kPageSystem = 1;
     static constexpr int kPageNews = 3;
-    static constexpr int kPageDevices = 4;
-    static constexpr int kPageDebug = 5;
+    static constexpr int kPageTodo = 4;
+    static constexpr int kPageDevices = 5;
+    static constexpr int kPageDebug = 6;
     void create(const MonitorModel &model);
     void show_next();
     void show_previous();
@@ -19,9 +20,15 @@ public:
     void handle_long_press(const MonitorModel &model);
     void update(const MonitorModel &model);
     int current_page() const { return current_page_; }
+    // A centred box above whatever page is showing. It lives on the top layer,
+    // so rebuilding the pages underneath leaves it in place.
+    void show_alert(const char *title);
+    void hide_alert();
+    bool alert_visible() const { return alert_ != nullptr; }
 private:
     lv_obj_t *pages_[kPageCount]{};
     lv_obj_t *status_[kPageCount]{};
+    lv_obj_t *alert_ = nullptr;
     int current_page_ = 0;
     int news_page_ = 0;
     // Index of the oldest log line on screen, so KEY held can page through.
@@ -32,6 +39,7 @@ private:
     void create_system(const MonitorModel &model);
     void create_activity(const MonitorModel &model);
     void create_news(const MonitorModel &model);
+    void create_todo(const MonitorModel &model);
     void create_devices(const MonitorModel &model);
     void create_debug(const MonitorModel &model);
 };

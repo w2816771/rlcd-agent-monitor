@@ -32,3 +32,9 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # in flash that idf.py coredump-info can read back over USB.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# app_main builds the demo MonitorModel as a stack temporary before copying it
+# into the global, and that struct is several kilobytes of std::string arrays
+# (12 process rows, 8 todo rows, 3 sources). The 3584 byte default overflowed
+# the moment the todo rows were added.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

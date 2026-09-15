@@ -14,7 +14,8 @@ watched.
 
 | | |
 |---|---|
-| Board | **Waveshare ESP32-S3-RLCD-4.2** (ESP32-S3 with a 400x300 ST7305 reflective LCD, SHTC3 sensor, ES7210 microphone, battery holder). No other board will work without porting the display driver and the pin map in `main/main.cpp`. |
+| Board | **Waveshare ESP32-S3-RLCD-4.2** (ESP32-S3 with a 400x300 ST7305 reflective LCD, SHTC3 sensor, ES7210 microphone, ES8311 codec, battery holder). No other board will work without porting the display driver and the pin map in `main/main.cpp`. |
+| Optional | A small speaker on the MX1.25 header, for the reminder sound. Without one, reminders are silent but still show on screen. |
 | A computer | macOS or Windows 10 1703+/11, with Bluetooth Low Energy. Up to three can feed one board at once. |
 | To build the firmware | ESP-IDF 5.5.1 |
 | To build the host | Rust 1.95 or newer. On Windows also the Visual Studio Build Tools C++ workload. |
@@ -25,10 +26,16 @@ nothing to sign up for.
 
 ## Pages
 
-Six, cycled with the buttons: overview (clock, weather, room temperature,
+Seven, cycled with the buttons: overview (clock, weather, room temperature,
 humidity, sound history), host system (CPU, RAM, network, top processes), agent
-usage (Codex and Claude tokens), news, devices, and a debug log showing the
-board's own log lines.
+usage (Codex and Claude tokens), news, todo (from the config file, with time
+left on anything that has a deadline), devices, and a debug log showing the
+board log lines.
+
+Reminders come from the same config file: a time of day, a repeating interval,
+or a countdown. When one is due the board draws a box over whatever page is up
+and plays a short eight bit jingle through the speaker header, repeating until
+any button is pressed. That press only silences it; it never turns a page.
 
 | Button | Press | Hold |
 |---|---|---|
@@ -123,7 +130,7 @@ of every minute, and is woken the moment you switch to it.
 - Two display optimisations were tried and reverted: writing only the changed
   window made the panel glitch, and idling it at its low refresh rate washed the
   picture out to grey. Both remain in the driver, uncalled. See `CLAUDE.md`.
-- The card slot, speaker and real time clock chip on the board are unused.
+- The card slot and real time clock chip on the board are unused.
 
 ## Licence
 

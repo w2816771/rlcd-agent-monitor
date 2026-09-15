@@ -36,11 +36,13 @@ switch ($Action) {
     }
     "uninstall" {
         Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+        Get-Process rlcd-host -ErrorAction SilentlyContinue | Stop-Process -Force
         Unregister-ScheduledTask -TaskName $task -Confirm:$false
         "RLCD host task removed."
     }
     "restart" {
         Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+        Get-Process rlcd-host -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-ScheduledTask -TaskName $task
     }
     "status" {

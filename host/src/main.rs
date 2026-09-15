@@ -23,8 +23,11 @@ use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+mod alerts;
 #[cfg(windows)]
 mod tray;
+
+use alerts::{ActiveAlert, AlertConfig, Scheduler, TodoConfig, TodoItem};
 
 // The tray icon is Windows only; elsewhere these calls compile away and the
 // launchd service already exposes the log.
@@ -103,6 +106,9 @@ struct Snapshot {
     source: String,
     headlines: Vec<String>,
     headline_ages: Vec<String>,
+    todos: Vec<TodoItem>,
+    // Present only while an alert is ringing and not yet dismissed.
+    alert: Option<ActiveAlert>,
 }
 
 #[derive(Clone)]
@@ -128,6 +134,9 @@ struct Config {
     device_name: String,
     // How often to send while the board is showing another machine.
     hidden_update_seconds: u64,
+    // Reminders the board rings, and the list it shows. See alerts.rs.
+    alerts: Vec<AlertConfig>,
+    todos: Vec<TodoConfig>,
 }
 
 impl Default for Config {
@@ -141,6 +150,8 @@ impl Default for Config {
             noise_offset_db: 87.0,
             device_name: String::new(),
             hidden_update_seconds: 300,
+            alerts: Vec::new(),
+            todos: Vec::new(),
         }
     }
 }
@@ -248,6 +259,7 @@ async fn main() -> Result<()> {
     let button_uuid = Uuid::parse_str(BUTTON_UUID)?;
     let mut message_id = 0u8;
     let mut config = load_config();
+    let mut scheduler = Scheduler::new(config.alerts.len(), config.todos.len());
     let mut net = NetSampler::new();
     let mut online = refresh_online(&config).await;
     let mut online_updated = Instant::now();
@@ -289,9 +301,25 @@ async fn main() -> Result<()> {
                     if let Ok(mut shared) = button_commands().lock() {
                         *shared = next_config.buttons.clone();
                     }
+                    if next_config.alerts != config.alerts || next_config.todos != config.todos {
+                        scheduler.reset_for(next_config.alerts.len(), next_config.todos.len());
+                    }
                     config = next_config;
-                    let snapshot =
-                        collect_snapshot(&online, &mut net, config.noise_offset_db, &source_name(&config));
+                    if ALERT_ACK.swap(false, Ordering::Relaxed) {
+                        scheduler.dismiss();
+                    }
+                    if let Some(title) = scheduler.poll(&config.alerts, &config.todos, Local::now()) {
+                        println!("Alert: {title}");
+                    }
+                    let todos = scheduler.todo_items(&config.alerts, &config.todos, Local::now());
+                    let snapshot = collect_snapshot(
+                        &online,
+                        &mut net,
+                        config.noise_offset_db,
+                        &source_name(&config),
+                        todos,
+                        scheduler.active(),
+                    );
                     let json = serde_json::to_vec(&snapshot)?;
                     message_id = message_id.wrapping_add(1);
                     let sent = timeout(
@@ -335,9 +363,29 @@ async fn main() -> Result<()> {
                     } else {
                         config.hidden_update_seconds.max(config.update_seconds.max(5))
                     };
-                    tokio::select! {
-                        _ = sleep(Duration::from_secs(interval)) => {}
-                        _ = shown_wake().notified() => {}
+                    let waited = Instant::now();
+                    loop {
+                        let remaining = Duration::from_secs(interval).saturating_sub(waited.elapsed());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        let slice = remaining.min(scheduler.next_check());
+                        tokio::select! {
+                            _ = sleep(slice) => {}
+                            _ = shown_wake().notified() => break,
+                        }
+                        // A dismissal or a fresh alert both deserve a snapshot now,
+                        // not at the end of the interval.
+                        if ALERT_ACK.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if scheduler
+                            .poll(&config.alerts, &config.todos, Local::now())
+                            .map(|title| println!("Alert: {title}"))
+                            .is_some()
+                        {
+                            break;
+                        }
                     }
                 }
                 if let Some(listener) = listener {
@@ -455,6 +503,8 @@ fn collect_snapshot(
     net: &mut NetSampler,
     noise_offset: f32,
     source: &str,
+    todos: Vec<TodoItem>,
+    alert: Option<ActiveAlert>,
 ) -> Snapshot {
     let (processes, process_count, cpu, codex_active, claude_active) = process_usage();
     let (ram, ram_used_gb, ram_total_gb) = memory_usage();
@@ -488,11 +538,18 @@ fn collect_snapshot(
         source: source.to_string(),
         headlines: online.headlines.clone(),
         headline_ages: online.headline_ages.clone(),
+        todos,
+        alert,
     }
 }
 
 const EVENT_SHOWN: u8 = 5;
 const EVENT_HIDDEN: u8 = 6;
+const EVENT_ALERT_DISMISSED: u8 = 7;
+
+// Set by the button listener, consumed by the collector loop, which then drops
+// the alert from the next snapshot.
+static ALERT_ACK: AtomicBool = AtomicBool::new(false);
 
 // Whether the board is currently showing this machine. It says so over the
 // button characteristic whenever the shown source changes.
@@ -558,6 +615,7 @@ fn spawn_button_listener(
                     }
                 }
                 EVENT_HIDDEN => SHOWN.store(false, Ordering::Relaxed),
+                EVENT_ALERT_DISMISSED => ALERT_ACK.store(true, Ordering::Relaxed),
                 event => run_button_command(event, note.value[3]),
             }
         }

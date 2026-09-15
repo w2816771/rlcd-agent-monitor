@@ -73,7 +73,15 @@ why the host strips text to ASCII.
 
 Board peripherals: SHTC3 temperature/humidity on I2C0 (SDA 13, SCL 14, address
 0x70), battery on ADC channel 3, ES7210 microphone over I2S TDM (MCLK 16, BCLK 9,
-WS 45, DIN 10) in `audio_meter.cpp`, display SPI3 in `components/rlcd`.
+WS 45, DIN 10) in `audio_meter.cpp`, ES8311 speaker DAC on the same I2S clocks
+with DOUT 8 and the amplifier enable on GPIO46 in `audio_player.cpp`, display
+SPI3 in `components/rlcd`.
+
+The microphone and the speaker share the I2S clock pins, so only one may have
+its channel enabled at a time. `audio_meter` holds a bus mutex from enable to
+disable of its receive channel; `audio_player` takes it to ring and creates its
+transmit channel fresh each time, then tears everything down and gives the bus
+back, so between alerts the DAC and amplifier are fully off.
 
 `components/rlcd/display_bsp.cpp` is derived from Waveshare's Apache-2.0 ST7305
 example and contains Chinese comments; treat it as vendor code and change it only
@@ -134,6 +142,23 @@ from there once overflowed its stack and reset the board. Queue state under
 `model_mutex` and let `monitor_ble_flush_events` send from the UI task. A crash
 dump is kept in the `coredump` partition; read it with `./idf.sh -p <port>
 coredump-info`, since panic output otherwise goes only to UART0.
+
+## Flashing on Windows: when the board goes dark
+
+Flash with esptool over the native USB port using `--before usb_reset`; the
+default reset cannot enter download mode while the firmware runs. About one
+flash in four, the reset request wedges the chip instead: esptool reports "No
+serial data received", the COM port then returns nothing, BLE stops
+advertising, and `--before no_reset` fails too. Nothing in the build causes
+this; it is the board. Only power clears it: replug USB or PWR off and on. If
+the port still does not appear, hold BOOT, click PWR, keep BOOT held for a
+second, then flash. Do not toggle DTR or RTS on the port by hand for a boot
+capture; that triggers the same wedge.
+
+The panic text does not reach the USB console. Read a crash with
+`idf.py -p COMx coredump-info` against the ELF of the build that crashed. A
+boot loop with "Starting" once a second and no panic on the console was a
+stack overflow in the main task, found that way.
 
 ## Two display optimisations that did not survive contact
 

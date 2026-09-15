@@ -17,6 +17,7 @@
 #include "display_bsp.h"
 #include "board_sensors.h"
 #include "audio_meter.h"
+#include "audio_player.h"
 #include "monitor_ble.h"
 #include "monitor_model.h"
 #include "monitor_ui.h"
@@ -103,6 +104,9 @@ void lvgl_task(void *) {
     int64_t last_sensor_update = 0;
     uint32_t last_stale_minutes = 0;
     unsigned long last_log_total = 0;
+    // The last alert id a button cleared, so a repeat in the next snapshot
+    // (the host has not heard the dismissal yet) does not ring again.
+    uint16_t dismissed_alert = 0;
     auto apply_sources = [](MonitorModel &target) {
         target.sources = monitor_ble_sources();
         target.source_live = false;
@@ -118,6 +122,21 @@ void lvgl_task(void *) {
         // The page reported is the one on screen when the button went down, so
         // the host can act on what the user was looking at.
         const uint8_t page = static_cast<uint8_t>(ui.current_page() + 1);
+        // A ringing alert takes every button: the press silences and clears it
+        // and goes nowhere else, so nobody flips a page by accident while
+        // reaching to stop the noise. The host hears event 7 and stops sending it.
+        if (ui.alert_visible() &&
+            (next_page_requested.load() || previous_page_requested.load() ||
+             home_requested.load() || long_press_requested.load())) {
+            next_page_requested.store(false);
+            previous_page_requested.store(false);
+            home_requested.store(false);
+            long_press_requested.store(false);
+            dismissed_alert = model.alert_id;
+            ui.hide_alert();
+            audio_player_stop();
+            monitor_ble_notify_button(7, page);
+        }
         if (next_page_requested.exchange(false)) {
             monitor_ble_notify_button(1, page);
             ui.show_next();
@@ -175,6 +194,18 @@ void lvgl_task(void *) {
             model.noise = audio_meter_levels();
             audio_meter_set_offset_db(model.noise_offset_db);
             ui.update(model);
+            const bool ringing_now = model.alert_id != 0 && model.alert_id != dismissed_alert &&
+                                     model.alert_age_s < kAlertMaxAgeSeconds;
+            if (ringing_now) {
+                if (!ui.alert_visible()) {
+                    ui.show_alert(model.alert_title.c_str());
+                    audio_player_ring();
+                }
+            } else if (ui.alert_visible()) {
+                // The host withdrew it, for instance after its own restart.
+                ui.hide_alert();
+                audio_player_stop();
+            }
         } else if (monitor_ble_connected() != last_connected || model.usb_connected != usb) {
             model.bluetooth_connected = monitor_ble_connected();
             model.bluetooth_rssi = monitor_ble_rssi();
@@ -270,6 +301,7 @@ extern "C" void app_main() {
     ui.create(model);
     board_sensors_init();
     audio_meter_init();
+    audio_player_init();
     monitor_ble_init();
     xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, nullptr, 5, nullptr, 1);
     xTaskCreatePinnedToCore(button_task, "button", 3072, nullptr, 4, nullptr, 0);

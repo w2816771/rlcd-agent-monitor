@@ -24,7 +24,8 @@ std::array<SourceStatus, kMaxSources> monitor_ble_sources();
 
 // Button events go to the shown host only: 1 KEY, 2 KEY held, 3 BOOT, 4 BOOT
 // held. The page is the one on screen when the button was pressed, one-based.
-// The board also sends 5 when a host becomes the shown one and 6 when hidden.
+// The board also sends 5 when a host becomes the shown one, 6 when hidden, and
+// 7 when a button dismissed a ringing alert instead of navigating.
 void monitor_ble_notify_button(uint8_t event, uint8_t page);
 
 // Sends any pending shown or hidden notices. Call from the UI task, never from a

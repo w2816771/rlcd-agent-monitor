@@ -30,6 +30,8 @@ std::atomic<uint32_t> period_ms{30000};
 std::atomic<int> offset_db{87};
 
 SemaphoreHandle_t history_mutex;
+// Owned by whichever side is driving the shared I2S clock pins.
+SemaphoreHandle_t bus_mutex;
 std::array<uint8_t, kNoiseHistory> history{};
 size_t history_filled = 0;
 uint8_t peak_db = 0;
@@ -76,6 +78,9 @@ void meter_task(void *) {
         },
     };
     tdm_config.slot_cfg.total_slot = 4;
+    // The bus is held from enable to disable. The speaker player takes it in
+    // between windows, when the clocks are idle, and gives it back when quiet.
+    xSemaphoreTake(bus_mutex, portMAX_DELAY);
     if (i2s_channel_init_tdm_mode(rx, &tdm_config) != ESP_OK || i2s_channel_enable(rx) != ESP_OK) {
         ESP_LOGE(TAG, "I2S TDM initialization failed");
         vTaskDelete(nullptr);
@@ -161,16 +166,22 @@ void meter_task(void *) {
         // Shut the codec and the I2S clocks down between windows.
         esp_codec_dev_close(recorder);
         i2s_channel_disable(rx);
+        xSemaphoreGive(bus_mutex);
         vTaskDelay(pdMS_TO_TICKS(period_ms.load()));
+        xSemaphoreTake(bus_mutex, portMAX_DELAY);
         if (i2s_channel_enable(rx) != ESP_OK) {
             ESP_LOGW(TAG, "Microphone wake failed; retrying");
+            xSemaphoreGive(bus_mutex);
             vTaskDelay(pdMS_TO_TICKS(5000));
+            xSemaphoreTake(bus_mutex, portMAX_DELAY);
             continue;
         }
         if (esp_codec_dev_open(recorder, &sample) != ESP_CODEC_DEV_OK) {
             ESP_LOGW(TAG, "Microphone codec wake failed; retrying");
             i2s_channel_disable(rx);
+            xSemaphoreGive(bus_mutex);
             vTaskDelay(pdMS_TO_TICKS(5000));
+            xSemaphoreTake(bus_mutex, portMAX_DELAY);
             continue;
         }
         esp_codec_dev_set_in_gain(recorder, 35.0f);
@@ -180,6 +191,7 @@ void meter_task(void *) {
 
 void audio_meter_init() {
     history_mutex = xSemaphoreCreateMutex();
+    bus_mutex = xSemaphoreCreateMutex();
     xTaskCreatePinnedToCore(meter_task, "audio-meter", 6144, nullptr, 3, nullptr, 0);
 }
 
@@ -210,4 +222,12 @@ AudioLevels audio_meter_levels() {
     }
     xSemaphoreGive(history_mutex);
     return levels;
+}
+
+bool audio_meter_take_bus(uint32_t timeout_ms) {
+    return bus_mutex && xSemaphoreTake(bus_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void audio_meter_give_bus() {
+    if (bus_mutex) xSemaphoreGive(bus_mutex);
 }

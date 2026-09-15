@@ -125,6 +125,8 @@ them with the value given.
 | `claude` | object | Claude usage, see 4.1 | | yes |
 | `headlines` | array of string | exactly 8 news titles | extra items ignored | yes |
 | `headline_ages` | array of string | exactly 8 ages matching `headlines`, like `12m`, `3h`, `2d` | | yes |
+| `todos` | array | up to 8 items, see 4.4 | more ignored | yes |
+| `alert` | object or `null` | the alert ringing now, see 4.5 | `null` clears the board | yes |
 
 ### 4.1 Agent usage object, used by `codex` and `claude`
 
@@ -173,6 +175,35 @@ better to offer should send `cpu`, which makes that ordering match the CPU one.
 The reference host does exactly that on macOS, where `ps` reports no disk
 figures, and on the first snapshot, where there is no interval to measure a
 rate over.
+
+### 4.4 Todo item
+
+| Key | Type | Meaning | Board handling |
+|---|---|---|---|
+| `text` | string | the item | clipped at the row width |
+| `due_min` | integer or `null` | minutes until due, negative once overdue, `null` with no deadline | shown as `2H 15M`, `-30M`, blank |
+
+The list is in the order it should be shown; the board does not sort it. The
+reference host appends any countdown alert still running as a trailing item, so
+the time left is visible before it rings.
+
+### 4.5 Alert object
+
+| Key | Type | Meaning | Board handling |
+|---|---|---|---|
+| `id` | integer | changes with every new alert, never 0 | a repeat of a dismissed id is ignored |
+| `title` | string | what to show, about 40 characters | wrapped in a centred box |
+| `age_s` | integer | seconds since it fired | over 1,800 is ignored as stale |
+
+While an alert is ringing the board shows the box over whatever page is up and
+plays a repeating jingle through the speaker. **Any button press dismisses it
+and does nothing else**: no page change, no source switch, no command. The board
+then sends event 7, and the host must drop `alert` from its next snapshot. Until
+that snapshot arrives the board keeps ignoring that `id`. Send the snapshot with
+the alert **immediately** when it fires rather than waiting for the interval.
+
+Only the snapshot of the shown host reaches the display, so an alert from a
+hidden host does not ring. Give each machine its own reminders.
 
 ### 4.3 Example
 
@@ -237,9 +268,10 @@ The board notifies the button characteristic with exactly 4 bytes:
 | 4 | BOOT held | run `buttons.boot_hold` if set |
 | 5 | this host is now the one shown | switch to the fast update interval; if it was hidden, send a snapshot immediately |
 | 6 | this host is now hidden | switch to the slow update interval |
+| 7 | a button dismissed the ringing alert | stop sending `alert`; the page byte is the page under the box |
 
-Page numbers: 1 overview, 2 host system, 3 agent usage, 4 news, 5 devices,
-6 debug log. The overview carries the sound history, the host system page
+Page numbers: 1 overview, 2 host system, 3 agent usage, 4 news, 5 todo,
+6 devices, 7 debug log. The overview carries the sound history, the host system page
 carries the top processes, and the debug log shows the board's own log lines.
 
 Rules the board enforces:
@@ -336,6 +368,18 @@ the meaning, not necessarily the method.
   by elapsed seconds and by 1,024. Send 0 for the first snapshot.
 - `battery` and `power`: laptop battery percent and watts on macOS. Send 0 on a
   desktop PC. `gpu` and `temp`: send 0.
+
+### Alerts and todos, every snapshot
+- `todos` comes from config `todos`, in file order, with `due_min` computed
+  from `due` and the local clock. Countdown alerts still running are appended.
+- `alert` is set when a trigger fires and cleared when event 7 arrives. Three
+  trigger kinds, all in config `alerts`: `at` (a time of day, fired once per
+  day, only within two minutes after the time so a host started at noon does
+  not ring for 09:00), `every` (an interval, first fire one interval after the
+  host started, optionally only `between` two times), and `countdown` (once,
+  that long after the host started or after `from`). A todo with `due` also
+  rings once as `DUE: <text>`. Editing `alerts` or `todos` in the file resets
+  the schedule, which is how a countdown is restarted.
 
 ### Agent activity
 - `codex.active` is true when a running process name matches `codex` or
@@ -436,6 +480,8 @@ install` copies it for you when no `config.yaml` exists yet.
 | `buttons.boot` | empty | command for event 3 |
 | `buttons.boot_hold` | empty | command for event 4 |
 | `noise_offset_db` | 87 | sent as `noise_offset` |
+| `alerts` | empty | list of `{title, at, days, every, between, countdown, from}`, see section 8 |
+| `todos` | empty | list of `{text, due}`, `due` as `YYYY-MM-DD HH:MM` or `HH:MM` for today |
 
 Example for the PC:
 

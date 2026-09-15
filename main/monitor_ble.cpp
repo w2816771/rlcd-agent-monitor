@@ -242,6 +242,32 @@ bool parse_snapshot(const char *json, int slot) {
             next.process_rows = i + 1;
         }
     }
+    cJSON *todos = cJSON_GetObjectItemCaseSensitive(root, "todos");
+    if (cJSON_IsArray(todos)) {
+        next.todo_rows = 0;
+        for (size_t i = 0; i < next.todos.size(); ++i) {
+            cJSON *obj = cJSON_GetArrayItem(todos, i);
+            if (!cJSON_IsObject(obj)) break;
+            copy_string(obj, "text", next.todos[i].text);
+            cJSON *due = cJSON_GetObjectItemCaseSensitive(obj, "due_min");
+            next.todos[i].has_due = cJSON_IsNumber(due);
+            next.todos[i].due_min = next.todos[i].has_due ? due->valueint : 0;
+            next.todo_rows = i + 1;
+        }
+    }
+    // Absent or null means nothing is ringing; the host drops the key once the
+    // board reports the dismissal.
+    next.alert_id = 0;
+    next.alert_title.clear();
+    next.alert_age_s = 0;
+    cJSON *alert = cJSON_GetObjectItemCaseSensitive(root, "alert");
+    if (cJSON_IsObject(alert)) {
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(alert, "id");
+        cJSON *age = cJSON_GetObjectItemCaseSensitive(alert, "age_s");
+        if (cJSON_IsNumber(id)) next.alert_id = static_cast<uint16_t>(std::clamp(id->valueint, 0, 65535));
+        if (cJSON_IsNumber(age)) next.alert_age_s = static_cast<uint32_t>(std::max(age->valueint, 0));
+        copy_string(alert, "title", next.alert_title);
+    }
 
     cJSON *headlines = cJSON_GetObjectItemCaseSensitive(root, "headlines");
     if (cJSON_IsArray(headlines)) {
@@ -285,10 +311,19 @@ int telemetry_access(uint16_t conn_handle, uint16_t, ble_gatt_access_ctxt *ctxt,
     // Each host reassembles in its own slot, so two machines sending at once
     // cannot interleave their chunks.
     const int slot_index = slot_for_connection(conn_handle);
-    if (slot_index < 0) return BLE_ATT_ERR_UNLIKELY;
+    // Writes are unacknowledged, so the host cannot see a rejection. Each drop
+    // is named here, or a silent failure looks exactly like a host that never
+    // sent anything.
+    if (slot_index < 0) {
+        ESP_LOGW(TAG, "Write from connection %u with no slot", conn_handle);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
     Slot &s = slots[slot_index];
     const uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    if (len < 5 || len > 244) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    if (len < 5 || len > 244) {
+        ESP_LOGW(TAG, "Slot %d chunk of %u bytes rejected", slot_index, len);
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
 
     uint8_t packet[244];
     uint16_t copied = 0;
@@ -300,6 +335,7 @@ int telemetry_access(uint16_t conn_handle, uint16_t, ble_gatt_access_ctxt *ctxt,
     const uint8_t index = packet[2];
     const uint8_t total = packet[3];
     if (version != PROTOCOL_VERSION || total == 0 || index >= total) {
+        ESP_LOGW(TAG, "Slot %d header rejected: version %u index %u of %u", slot_index, version, index, total);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     if (index == 0) {
@@ -309,6 +345,11 @@ int telemetry_access(uint16_t conn_handle, uint16_t, ble_gatt_access_ctxt *ctxt,
         s.json_length = 0;
     }
     if (message != s.active_message || index != s.expected_chunk || total != s.chunk_count) {
+        // Only while mid-message. After the reset expected is 0, so the rest
+        // of the lost message mismatches quietly and the next index 0 resyncs.
+        if (s.expected_chunk != 0) {
+            ESP_LOGW(TAG, "Slot %d dropped message %u: got chunk %u expected %u", slot_index, message, index, s.expected_chunk);
+        }
         s.json_length = 0;
         return BLE_ATT_ERR_UNLIKELY;
     }
