@@ -28,9 +28,18 @@ switch ($Action) {
             -Argument "/c `"`"$exe`" >> `"$log`" 2>&1`"" `
             -WorkingDirectory $PSScriptRoot
         $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        # A second trigger that fires every minute forever. The restart on
+        # failure setting below only covers a failing exit, and the collector has
+        # been seen ending on a console close signal instead, which leaves the
+        # task simply finished and nothing to bring it back. With IgnoreNew this
+        # trigger is a no-op while the collector is up and a revival when it is
+        # not, so the worst case is a minute of a stale clock on the board.
+        $heartbeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+            -RepetitionInterval (New-TimeSpan -Minutes 1)
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-        Register-ScheduledTask -TaskName $task -Action $run -Trigger $logon -Settings $settings -Force | Out-Null
+            -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $task -Action $run -Trigger $logon, $heartbeat -Settings $settings -Force | Out-Null
         Start-ScheduledTask -TaskName $task
         "RLCD host task installed and started."
     }

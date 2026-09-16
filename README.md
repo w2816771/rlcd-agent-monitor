@@ -93,6 +93,49 @@ in the hidden overflow, so drag it onto the taskbar if you want it visible. Its
 tooltip shows the last successful send, and its menu opens the log, the config
 and the folder, or stops the collector.
 
+### If the host stops
+
+The board keeps showing the last snapshot with its age in the header, so a
+stopped host looks like a stale clock.
+
+On Windows the task carries a trigger that fires every minute and starts the
+collector if it is not already running, so it normally comes back by itself
+within about a minute. The commands below are for when you do not want to wait, or when it
+is not coming back at all.
+
+Run them from the `host` folder of **this** checkout. If a second copy of the
+project is lying around, `install` there will fail with `Missing ...
+rlcd-host.exe`, which means you are in the wrong folder rather than that
+anything is broken. On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\service.ps1 status
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\service.ps1 restart
+```
+
+On macOS, from `host/`:
+
+```bash
+./service.sh status
+```
+
+```bash
+./service.sh restart
+```
+
+`restart` stops any running collector before starting a new one, so it is safe
+to run even when the host is already up. If it still will not stay running,
+read the end of the log (`service.ps1 logs`, or `host\rlcd-host.log`; on macOS
+`./service.sh logs`) for the reason. A log that ends in `^C` means the collector
+was sent a console close signal rather than crashing, which the Windows task's
+minute trigger recovers from on its own; `restart` just skips the wait.
+
+If you used **Quit collector** from the tray icon, the task will not start again
+by itself until the next logon. Use `restart` to bring it back sooner.
+
 ## Repository layout
 
 | Path | Contents |
