@@ -1,0 +1,11 @@
+# Link the C runtime into the binary on Windows. Without this the exe imports
+# vcruntime140.dll, which only exists on machines that have the Visual C++
+# redistributable, so a downloaded release would fail to start on a clean
+# install with a missing DLL dialog and no other clue. The UCRT it also uses
+# ships with Windows 10 and later, so this is the only piece that has to come
+# along. Costs a few hundred kilobytes.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

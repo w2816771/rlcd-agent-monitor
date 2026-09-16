@@ -1,0 +1,118 @@
+# Builds the host collector for every platform it supports and attaches the
+# binaries to a GitHub release.
+#
+# There is no one file that runs everywhere: these are native binaries, so each
+# platform needs its own. What this gives instead is one download per platform,
+# each self contained, built from the same commit by the same job.
+name: Release host binaries
+
+on:
+  push:
+    tags: ["v*"]
+  # So the matrix can be proven without cutting a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide whether the others work.
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: rlcd-host.exe
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact: rlcd-host
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            artifact: rlcd-host
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: rlcd-host
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # btleplug talks to BlueZ over D-Bus on Linux and needs its headers.
+      - name: Install Linux Bluetooth headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Build
+        working-directory: host
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Test
+        working-directory: host
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Stage the binary and what it needs beside it
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp "host/target/${{ matrix.target }}/release/${{ matrix.artifact }}" staging/
+          cp host/config.example.yaml staging/
+          cp LICENSE NOTICE staging/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp host/service.ps1 staging/
+          else
+            cp host/service.sh staging/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rlcd-host-${{ matrix.name }}
+          path: staging/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      # One archive per platform rather than loose files, so the config
+      # template and the licence travel with the binary.
+      - name: Package each platform
+        run: |
+          mkdir -p release
+          for dir in downloaded/*/; do
+            name=$(basename "$dir")
+            if [[ "$name" == *windows* ]]; then
+              (cd "$dir" && zip -r "../../release/$name.zip" .)
+            else
+              chmod +x "$dir"/rlcd-host
+              tar -czf "release/$name.tar.gz" -C "$dir" .
+            fi
+          done
+          ls -la release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body: |
+            Host collector binaries. Download the one for your machine, unpack it,
+            copy `config.example.yaml` to `config.yaml` and edit it for your
+            location, then run the binary.
+
+            The Windows build links the C runtime statically, so it needs no
+            Visual C++ redistributable. The macOS and Linux builds are unsigned:
+            macOS will refuse to open them until you clear the quarantine flag
+            with `xattr -d com.apple.quarantine rlcd-host`.
