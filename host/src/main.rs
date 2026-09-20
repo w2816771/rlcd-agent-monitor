@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -264,11 +265,14 @@ async fn main() -> Result<()> {
     let mut net = NetSampler::new();
     let mut online = refresh_online(&config).await;
     let mut online_updated = Instant::now();
+    // When the board was last reachable, for the watchdog below.
+    let mut failing_since: Option<Instant> = None;
 
     loop {
         match find_and_connect(&adapter, characteristic_uuid, button_uuid).await {
             Ok((peripheral, characteristic, button)) => {
                 println!("Connected to {DEVICE_NAME}");
+                failing_since = None;
                 tray_status("Connected");
                 // Assume shown until the board says otherwise, so the first
                 // snapshot after connecting is never delayed.
@@ -396,6 +400,19 @@ async fn main() -> Result<()> {
             Err(error) => {
                 tray_status("Searching for the board");
                 eprintln!("{error:#}; retrying in 3 seconds");
+                // A stuck Bluetooth stack has so far always been cured by a new
+                // process and by nothing less, and a process that is alive but
+                // stuck is invisible to the service that would restart a dead
+                // one. So under a service, where output is not a terminal, ten
+                // minutes without the board ends this process and the service
+                // starts a clean one. Ceiling: with the board switched off this
+                // restarts every ten minutes for nothing, which costs a log
+                // line. Run by hand, it keeps trying instead.
+                let since = *failing_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > Duration::from_secs(600) && !std::io::stdout().is_terminal() {
+                    eprintln!("No board for ten minutes; exiting so the service starts a fresh process");
+                    std::process::exit(1);
+                }
                 sleep(Duration::from_secs(3)).await;
             }
         }
@@ -458,17 +475,29 @@ async fn find_and_connect(
                 let _ = timeout(Duration::from_secs(3), peripheral.disconnect()).await;
                 continue;
             }
-            adapter.stop_scan().await?;
             let characteristics = peripheral.characteristics();
-            let characteristic = characteristics
+            // Connected, discovered, and still no telemetry characteristic means
+            // the operating system served a cached, empty service list for a
+            // link that is not really up. Returning the error from here left
+            // that link in place, so the next attempt found the peripheral
+            // "connected", skipped the connect, and read the same empty list,
+            // forever. Dropping the link makes the next attempt a real one.
+            let Some(characteristic) = characteristics
                 .iter()
                 .find(|item| item.uuid == uuid)
                 .cloned()
-                .context("telemetry characteristic not found")?;
+            else {
+                eprintln!("{DEVICE_NAME} connected without its telemetry characteristic; dropping the link and rescanning");
+                let _ = timeout(Duration::from_secs(3), peripheral.disconnect()).await;
+                continue;
+            };
             let button = characteristics
                 .iter()
                 .find(|item| item.uuid == button_uuid)
                 .cloned();
+            // Only now: the scan has to keep running while stale entries are
+            // being worked through above.
+            adapter.stop_scan().await?;
             return Ok((peripheral, characteristic, button));
         }
         sleep(Duration::from_millis(500)).await;
