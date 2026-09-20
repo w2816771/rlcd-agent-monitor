@@ -32,10 +32,15 @@ jobs:
             os: macos-14
             target: aarch64-apple-darwin
             artifact: rlcd-host
+          # Built on the arm runner: GitHub retired the macos-13 Intel image, and
+          # a job asking for it is never scheduled, only cancelled. The tests
+          # already run natively in the arm64 job on identical code, so this
+          # one only has to prove the Intel target compiles and links.
           - name: macos-x86_64
-            os: macos-13
+            os: macos-14
             target: x86_64-apple-darwin
             artifact: rlcd-host
+            skip_tests: true
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -58,6 +63,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Test
+        if: ${{ !matrix.skip_tests }}
         working-directory: host
         run: cargo test --release --target ${{ matrix.target }}
 

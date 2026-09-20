@@ -24,6 +24,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 mod alerts;
+mod limits;
 #[cfg(windows)]
 mod tray;
 
@@ -868,26 +869,28 @@ fn codex_usage(active: bool) -> AgentUsage {
     let mut tokens = 0u64;
     let mut sessions = 0u8;
     let mut context = 0u8;
-    let mut five_hour = "5H --".to_string();
-    let mut weekly = "7D --".to_string();
+    let mut primary: Option<limits::Window> = None;
+    let mut secondary: Option<limits::Window> = None;
     for path in recent_jsonl(&root, cutoff) {
-        // total_token_usage is cumulative for the whole session, so today's
-        // share is the growth since the last record written before midnight.
+        // The usage record is cumulative for the whole session, so the share
+        // for today is the growth since the last record before midnight. Cached
+        // input is left out: every turn reads the whole conversation back from
+        // the cache, so counting it measures how long the session is, many
+        // times over, rather than how much work was done.
         let mut carried = 0u64;
-        let mut last_total = 0u64;
+        let mut last_fresh = 0u64;
         let mut active_today = false;
         for value in json_lines(&path) {
             if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
                 continue;
             }
             let today = is_today(&value, cutoff);
-            if let Some(total) = value
-                .pointer("/payload/info/total_token_usage/total_tokens")
-                .and_then(Value::as_u64)
-            {
-                last_total = total;
+            if let Some(usage) = value.pointer("/payload/info/total_token_usage") {
+                let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+                let fresh = count("total_tokens").saturating_sub(count("cached_input_tokens"));
+                last_fresh = fresh;
                 if !today {
-                    carried = total;
+                    carried = fresh;
                 }
             }
             if !today {
@@ -903,32 +906,59 @@ fn codex_usage(active: bool) -> AgentUsage {
             if let (Some(used), Some(limit)) = (used, limit) {
                 context = ((used * 100 / limit.max(1)).min(100)) as u8;
             }
-            if let Some(percent) = value
-                .pointer("/payload/rate_limits/primary/used_percent")
-                .and_then(Value::as_f64)
+            if let Some(window) = value
+                .pointer("/payload/rate_limits/primary")
+                .and_then(limits::window_from)
             {
-                five_hour = format!("5H {:.0}%", percent);
+                primary = Some(window);
             }
-            if let Some(percent) = value
-                .pointer("/payload/rate_limits/secondary/used_percent")
-                .and_then(Value::as_f64)
+            if let Some(window) = value
+                .pointer("/payload/rate_limits/secondary")
+                .and_then(limits::window_from)
             {
-                weekly = format!("7D {:.0}%", percent);
+                secondary = Some(window);
             }
         }
         if active_today {
             sessions = sessions.saturating_add(1);
-            tokens = tokens.saturating_add(last_total.saturating_sub(carried));
+            tokens = tokens.saturating_add(last_fresh.saturating_sub(carried));
         }
     }
+    // A weekly figure from yesterday is still true today, so when nothing has
+    // run since midnight the newest record of the past week stands in. Newest
+    // file first, and the first one with limits ends the search.
+    if primary.is_none() || secondary.is_none() {
+        let week_ago = cutoff - chrono::Duration::days(7);
+        for path in recent_jsonl(&root, week_ago).into_iter().rev() {
+            let newest = json_lines(&path).into_iter().rev().find(|value| {
+                value
+                    .pointer("/payload/rate_limits/primary")
+                    .is_some_and(|window| !window.is_null())
+            });
+            if let Some(value) = newest {
+                primary = primary.or_else(|| {
+                    value
+                        .pointer("/payload/rate_limits/primary")
+                        .and_then(limits::window_from)
+                });
+                secondary = secondary.or_else(|| {
+                    value
+                        .pointer("/payload/rate_limits/secondary")
+                        .and_then(limits::window_from)
+                });
+                break;
+            }
+        }
+    }
+    let now = limits::now_epoch();
     AgentUsage {
         active,
         tokens_k: tokens / 1000,
         context,
         sessions,
         cost: 0.0,
-        five_hour,
-        weekly,
+        five_hour: limits::label("5H", primary, now),
+        weekly: limits::label("7D", secondary, now),
     }
 }
 
@@ -966,20 +996,36 @@ fn claude_usage(active: bool) -> AgentUsage {
             sessions = sessions.saturating_add(1);
         }
     }
-    // Today's total comes from ccusage rather than from summing these records.
-    // Resuming a session copies earlier turns into the new file, so the same
-    // usage record appears several times and a plain sum reads about twice the
-    // real figure. ccusage drops the repeats by message and request id, and it
-    // already supplies the two window strings shown beside this number.
-    let (five_hour, weekly, today) = claude_ccusage_windows();
+    // Tokens come from ccusage rather than from summing these records: resuming
+    // a session copies earlier turns into the new file, so a plain sum counts
+    // them again. The limit windows come from Claude Code itself by way of the
+    // status line, and fall back to token figures when that file is not there.
+    let totals = claude_ccusage_totals();
+    let claude_limits = limits::read_claude_limits(&home().join(".claude/rlcd-usage.json"));
+    let now = limits::now_epoch();
+    let five_hour = match claude_limits.as_ref().and_then(|l| l.five_hour) {
+        Some(window) => limits::label("5H", Some(window), now),
+        None => format!("5H {}", compact_tokens(totals.block_fresh)),
+    };
+    let weekly = match claude_limits.as_ref().and_then(|l| l.seven_day) {
+        Some(window) => limits::label("7D", Some(window), now),
+        None => format!("7D {}", compact_tokens(totals.week_fresh)),
+    };
+    // The context figure belongs to one session, so it is only worth showing
+    // while that session is still ticking; otherwise the old estimate stands.
+    let context = claude_limits
+        .as_ref()
+        .filter(|l| l.age < Duration::from_secs(600))
+        .and_then(|l| l.context_percent)
+        .unwrap_or(((last_context * 100 / 200_000).min(100)) as u8);
     AgentUsage {
         active,
-        tokens_k: today / 1000,
-        context: ((last_context * 100 / 200_000).min(100)) as u8,
+        tokens_k: totals.today_fresh / 1000,
+        context,
         sessions,
         cost: 0.0,
-        five_hour: format!("5H {}", compact_tokens(five_hour)),
-        weekly: format!("7D {}", compact_tokens(weekly)),
+        five_hour,
+        weekly,
     }
 }
 
@@ -993,9 +1039,22 @@ fn compact_tokens(tokens: u64) -> String {
     }
 }
 
-// Returns the 5 hour window, the 7 day window, and today's total.
-fn claude_ccusage_windows() -> (u64, u64, u64) {
-    static CACHE: OnceLock<Mutex<Option<(Instant, (u64, u64, u64))>>> = OnceLock::new();
+// Token figures with cache reads left out: output, fresh input, and cache
+// writes. A long session reads its whole conversation back from the cache on
+// every turn, so the raw total is mostly the same context counted hundreds of
+// times; one day measured 64M in total and 3.7M without the rereads.
+#[derive(Clone, Copy, Default)]
+struct ClaudeTotals {
+    today_fresh: u64,
+    // The last seven days including today. The weekly report of ccusage is a
+    // calendar week, which on a Sunday holds one day.
+    week_fresh: u64,
+    // The active five hour block, as ccusage infers it.
+    block_fresh: u64,
+}
+
+fn claude_ccusage_totals() -> ClaudeTotals {
+    static CACHE: OnceLock<Mutex<Option<(Instant, ClaudeTotals)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache
         .lock()
@@ -1013,6 +1072,8 @@ fn claude_ccusage_windows() -> (u64, u64, u64) {
         };
         command_output(binary, args)
     };
+    let count = |item: &Value, key: &str| item.get(key).and_then(Value::as_u64).unwrap_or(0);
+
     let blocks: Value = serde_json::from_str(&run(&[
         "--yes",
         "ccusage@latest",
@@ -1023,7 +1084,7 @@ fn claude_ccusage_windows() -> (u64, u64, u64) {
         "--active",
     ]))
     .unwrap_or(Value::Null);
-    let five_hour = blocks
+    let block_fresh = blocks
         .get("blocks")
         .and_then(Value::as_array)
         .and_then(|items| {
@@ -1031,28 +1092,14 @@ fn claude_ccusage_windows() -> (u64, u64, u64) {
                 .iter()
                 .find(|item| item.get("isActive").and_then(Value::as_bool) == Some(true))
         })
-        .and_then(|item| item.get("totalTokens"))
-        .and_then(Value::as_u64)
+        .and_then(|item| item.get("tokenCounts"))
+        .map(|counts| {
+            count(counts, "inputTokens")
+                + count(counts, "outputTokens")
+                + count(counts, "cacheCreationInputTokens")
+        })
         .unwrap_or(0);
-    let report: Value = serde_json::from_str(&run(&[
-        "--yes",
-        "ccusage@latest",
-        "claude",
-        "weekly",
-        "--json",
-        "--offline",
-    ]))
-    .unwrap_or(Value::Null);
-    let weekly = report
-        .get("weekly")
-        .and_then(Value::as_array)
-        .and_then(|items| items.last())
-        .and_then(|item| item.get("totalTokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    // Match on the date rather than taking the last entry, which is the most
-    // recent day with any usage and not necessarily today.
-    let wanted = Local::now().format("%Y-%m-%d").to_string();
+
     let report: Value = serde_json::from_str(&run(&[
         "--yes",
         "ccusage@latest",
@@ -1062,18 +1109,34 @@ fn claude_ccusage_windows() -> (u64, u64, u64) {
         "--offline",
     ]))
     .unwrap_or(Value::Null);
-    let today = report
+    // Dates compare as text in this form, so the window is a string range.
+    let today = Local::now().date_naive();
+    let today_text = today.format("%Y-%m-%d").to_string();
+    let week_start = (today - chrono::Duration::days(6))
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut today_fresh = 0u64;
+    let mut week_fresh = 0u64;
+    for item in report
         .get("daily")
         .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.get("date").and_then(Value::as_str) == Some(wanted.as_str()))
-        })
-        .and_then(|item| item.get("totalTokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let values = (five_hour, weekly, today);
+        .into_iter()
+        .flatten()
+    {
+        let Some(date) = item.get("date").and_then(Value::as_str) else {
+            continue;
+        };
+        let fresh = count(item, "inputTokens")
+            + count(item, "outputTokens")
+            + count(item, "cacheCreationTokens");
+        if date == today_text {
+            today_fresh = fresh;
+        }
+        if date >= week_start.as_str() && date <= today_text.as_str() {
+            week_fresh += fresh;
+        }
+    }
+    let values = ClaudeTotals { today_fresh, week_fresh, block_fresh };
     *guard = Some((Instant::now(), values));
     values
 }

@@ -19,7 +19,7 @@ watched.
 | A computer | macOS or Windows 10 1703+/11, with Bluetooth Low Energy. Up to three can feed one board at once. |
 | To build the firmware | ESP-IDF 5.5.1 |
 | To build the host | Rust 1.95 or newer. On Windows also the Visual Studio Build Tools C++ workload. |
-| Optional | Node.js, only for Claude's 5 hour and weekly figures, which come from `ccusage` |
+| Optional | Node.js, for Claude's token counts, which come from `ccusage`. Without it they read zero; the limit percentages do not need it |
 
 Everything else — weather and news — uses keyless public endpoints, so there is
 nothing to sign up for.
@@ -92,6 +92,28 @@ On Windows the host also shows a notification area icon. Windows puts new icons
 in the hidden overflow, so drag it onto the taskbar if you want it visible. Its
 tooltip shows the last successful send, and its menu opens the log, the config
 and the folder, or stops the collector.
+
+### Claude limit figures
+
+The board shows Claude's 5 hour and 7 day limits as percentages, the same ones
+the `/usage` screen shows. Claude Code hands them to its status line command,
+so the status line script has to leave them where the host can find them. Add
+this near the top of your script, after the line that reads stdin into `input`:
+
+```sh
+usage_file="$HOME/.claude/rlcd-usage.json"
+if command -v jq >/dev/null 2>&1; then
+  printf '%s' "$input" | jq -c '{rate_limits: (.rate_limits // null), context_window: (.context_window // null)}' > "$usage_file.tmp" 2>/dev/null
+else
+  printf '%s' "$input" > "$usage_file.tmp" 2>/dev/null
+fi
+[ -s "$usage_file.tmp" ] && mv -f "$usage_file.tmp" "$usage_file" 2>/dev/null
+```
+
+If you have no status line yet, a script holding `input=$(cat)` and those lines
+is enough; point `statusLine` in `~/.claude/settings.json` at it. The figures
+exist for Pro and Max subscriptions and refresh while Claude Code is running.
+Without the file the host falls back to token counts, shown as `5H 1.4M`.
 
 ### If the host stops
 

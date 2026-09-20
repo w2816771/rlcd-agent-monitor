@@ -133,12 +133,12 @@ them with the value given.
 | Key | Type | Meaning | Board handling | Shown |
 |---|---|---|---|---|
 | `active` | boolean | the agent app is running now | star in status bar, RUN or IDLE | yes |
-| `tokens_k` | integer | tokens used **today**, in thousands | negative becomes 0 | yes |
+| `tokens_k` | integer | tokens of **work** today, in thousands: output, fresh input and cache writes. Cache rereads are left out, see section 8 | negative becomes 0 | yes |
 | `context` | integer | context window use percent of the latest turn today | clamped 0 to 100 | no |
 | `sessions` | integer | sessions with activity today | clamped 0 to 255 | yes |
 | `cost` | number | cost in USD, send `0` | | no |
-| `five_hour` | string | 5 hour window, like `5H 12%` or `5H 1.4M` | | yes |
-| `weekly` | string | 7 day window, like `7D 20%` or `7D 9.1M` | | yes |
+| `five_hour` | string | share of the 5 hour limit used, like `5H 23%`; `5H 0%` once its reset time has passed; `5H --` when unknown. A token figure like `5H 1.4M` only as a fallback | | yes |
+| `weekly` | string | share of the 7 day limit used, like `7D 41%`, same rules | | yes |
 
 The agent page shows `(codex.tokens_k + claude.tokens_k) / 1000` as millions
 under TOKENS TODAY.
@@ -385,43 +385,66 @@ the meaning, not necessarily the method.
 - `codex.active` is true when a running process name matches `codex` or
   `chatgpt`. `claude.active` is true for `claude`.
 
-### Tokens today
+### Limits and tokens
+
+The figure a person watches is **how much of each limit is used and when it
+resets**, so that is what `five_hour` and `weekly` carry, as a percentage, for
+both agents. A recorded percentage outlives its window: every window comes with
+a reset time, and once that has passed the host sends `0%` rather than the old
+figure.
+
+`tokens_k` counts work, not traffic. Both agents read the whole conversation
+back from a cache on every turn, so a raw total is mostly the same context
+counted hundreds of times: one measured day was 64M tokens in total and 3.7M
+without the rereads. Count output, uncached input and cache writes; leave cache
+reads out.
+
 "Today" means records with a timestamp at or after **local midnight**. Every
 record in both formats has a top-level RFC 3339 `timestamp`. A record without a
-usable timestamp counts as today. Only read files modified since local midnight.
+usable timestamp counts as today.
 
 **Codex**, files under `%USERPROFILE%\.codex\sessions\` on Windows, or
 `~/.codex/sessions/` on macOS, any depth, `*.jsonl`:
-- Use lines where `payload.type` is `token_count`.
-- `payload.info.total_token_usage.total_tokens` is **cumulative for the
-  session**. Today's tokens for one file are its last cumulative value minus the
-  last cumulative value recorded before midnight, or minus 0 if there is none.
-- `tokens_k` is the sum over files active today, divided by 1,000.
-- `sessions` counts files with at least one record today.
+- Use lines where `payload.type` is `token_count`. `payload.info` can be null.
+- `payload.info.total_token_usage` is **cumulative for the session**. Work so
+  far is `total_tokens - cached_input_tokens`. Today's share for one file is its
+  last value minus the last value recorded before midnight, or minus 0.
+- `tokens_k` is the sum over files active today, divided by 1,000. `sessions`
+  counts those files.
 - `context` is `payload.info.last_token_usage.total_tokens` divided by
   `payload.info.model_context_window`, as a percent, from the latest record today.
-- `five_hour` is `5H {payload.rate_limits.primary.used_percent}%` and `weekly`
-  is `7D {payload.rate_limits.secondary.used_percent}%`, both rounded, from the
-  latest record today. Default `5H --` and `7D --`.
+- `five_hour` comes from `payload.rate_limits.primary` and `weekly` from
+  `payload.rate_limits.secondary`: `used_percent`, rounded, with `resets_at` in
+  Unix seconds deciding whether it still applies. Take the latest record today;
+  if there is none, the newest record from the past 7 days, since a weekly
+  figure from yesterday is still true. Default `5H --` and `7D --`.
 
-**Claude**, files under `%USERPROFILE%\.claude\projects\` on Windows, or
-`~/.claude/projects/` on macOS, any depth, `*.jsonl`:
-- Use lines that have `message.usage`.
-- Each record's tokens are `input_tokens + output_tokens +
-  cache_read_input_tokens + cache_creation_input_tokens`. Sum today's records
-  for `tokens_k`, divided by 1,000.
-- `sessions` counts files with at least one record today.
-- `context` is the latest record's `input_tokens + cache_read_input_tokens +
-  cache_creation_input_tokens` divided by 200,000, as a percent, capped at 100.
-- `five_hour` and `weekly` come from `ccusage`, run at most once every
-  5 minutes and cached between runs. This needs Node.js; on Windows call
-  `npx.cmd`.
-  - `npx --yes ccusage@latest claude blocks --json --offline --active`: take
-    `totalTokens` of the item in `blocks` whose `isActive` is true.
-  - `npx --yes ccusage@latest claude weekly --json --offline`: take
-    `totalTokens` of the last item in `weekly`.
-  - Format both as `5H` or `7D` followed by `1.4M` for a million or more,
-    `940K` for a thousand or more, otherwise the plain number.
+**Claude limits** come from Claude Code itself. It passes the same figures its
+`/usage` screen shows to the status line command on stdin, as
+`rate_limits.five_hour` and `rate_limits.seven_day`, each with `used_percentage`
+and `resets_at`, plus `context_window.used_percentage`. The status line script
+leaves them in `~/.claude/rlcd-usage.json` (see the README for the lines that do
+it) and the host reads that file on every snapshot. They exist only for Pro and
+Max subscriptions, only after the first response of a session, and the file is
+only refreshed while Claude Code is running, so use elsewhere shows up the next
+time it ticks. `context` uses the file while it is under 10 minutes old.
+
+**Claude tokens**, and the fallback when that file is missing, come from
+`ccusage`, run at most once every 5 minutes and cached. This needs Node.js; on
+Windows call `npx.cmd`. Do not sum the records under `~/.claude/projects`
+directly: resuming a session copies earlier turns into the new file, and a plain
+sum read 373M where the de-duplicated figure was 180M.
+- `npx --yes ccusage@latest claude daily --json --offline`: from the entry whose
+  `date` is today, `inputTokens + outputTokens + cacheCreationTokens` is
+  `tokens_k` times 1,000. The same sum over the last 7 dates is the `weekly`
+  fallback. Do not use `ccusage claude weekly`: it reports a calendar week, which
+  on a Sunday holds one day.
+- `npx --yes ccusage@latest claude blocks --json --offline --active`: from the
+  block whose `isActive` is true, `tokenCounts.inputTokens + outputTokens +
+  cacheCreationInputTokens` is the `five_hour` fallback.
+- Fallback figures are formatted as `5H` or `7D` followed by `1.4M`, `940K`, or
+  the plain number.
+- `sessions` counts files under `~/.claude/projects` with a record today.
 
 Verify both folders exist on the PC. If an agent is not installed, send its
 object with zeros and `--` strings.

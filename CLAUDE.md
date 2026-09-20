@@ -95,9 +95,12 @@ shelling out to macOS tools through `command_output`, so missing values degrade 
 zero rather than erroring. Those functions are gated to macOS; every other
 platform uses the `portable` module built on `sysinfo`, which is compiled on the
 Mac too so a Mac build still type-checks the Windows path. Battery readings are
-macOS only. Codex quota is read from its local rate-limit records;
-Claude totals come from `ccusage` via `npx`, rate limited to one call per five
-minutes. Weather (Open-Meteo) and Google News RSS refresh on
+macOS only. Limits are shown as percentages with their reset times honoured (`limits.rs`):
+Codex from the `rate_limits` in its session records, Claude from
+`~/.claude/rlcd-usage.json`, which the user's status line script writes from the
+figures Claude Code passes it. Token counts leave cache rereads out and, for
+Claude, come from `ccusage` via `npx`, one call per five minutes; never sum the
+transcript records directly, since resumed sessions repeat them. Weather (Open-Meteo) and Google News RSS refresh on
 `online_refresh_minutes`.
 
 `host/config.yaml` is re-read every loop iteration, so config changes take effect
