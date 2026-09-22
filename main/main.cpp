@@ -14,6 +14,7 @@
 #include "lvgl.h"
 
 #include "debug_log.h"
+#include "trends.h"
 #include "display_bsp.h"
 #include "board_sensors.h"
 #include "audio_meter.h"
@@ -153,7 +154,7 @@ void lvgl_task(void *) {
             // KEY held flips headlines on the news page and switches the shown
             // source everywhere else. A switch is not forwarded as a button
             // event, so a command mapped to KEY held cannot fire on every switch.
-            if (ui.current_page() == MonitorUi::kPageSystem ||
+            if (ui.current_page() == MonitorUi::kPageProcesses ||
                 ui.current_page() == MonitorUi::kPageNews ||
                 ui.current_page() == MonitorUi::kPageDebug) {
                 monitor_ble_notify_button(2, page);
@@ -193,6 +194,7 @@ void lvgl_task(void *) {
             model.noise_db = audio_meter_db();
             model.noise = audio_meter_levels();
             audio_meter_set_offset_db(model.noise_offset_db);
+            trends_push(model);
             ui.update(model);
             const bool ringing_now = model.alert_id != 0 && model.alert_id != dismissed_alert &&
                                      model.alert_age_s < kAlertMaxAgeSeconds;

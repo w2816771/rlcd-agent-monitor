@@ -111,10 +111,16 @@ them with the value given.
 | `ram` | integer | memory use percent, 0 to 100 | clamped 0 to 100 | yes |
 | `ram_used_gb` | number | memory in use, GiB | | yes |
 | `ram_total_gb` | number | installed memory, GiB | also the divisor for per-process memory percent | yes |
-| `gpu` | integer | GPU use percent, send `0` if unknown | clamped 0 to 100 | no |
+| `gpu` | integer | GPU use percent, send `0` if unknown | clamped 0 to 100 | yes |
+| `cores` | array of integer | use percent of each logical processor, in system order, up to 32 | more ignored | yes |
+| `gpu_temp` | number | GPU temperature Celsius, `0` if unknown | 0 shows N/A | yes |
+| `gpu_mem_used_mb` | integer | GPU memory in use, MiB, `0` if unknown | clamped 0 to 65,535 | yes |
+| `gpu_mem_total_mb` | integer | GPU memory installed, MiB, `0` if unknown | 0 hides the figure | yes |
+| `gpu_power_w` | number | GPU power draw watts, `0` if unknown | 0 hides the figure | yes |
+| `fan_rpm` | array | one entry per fan: RPM as an integer, or `null` for a fan with no reading | empty array shows FAN N/A; `null` shows that fan as N/A | yes |
 | `swap` | integer | swap or page file use percent | clamped 0 to 100 | no |
 | `swap_used_gb` | number | swap or page file in use, GiB | | yes |
-| `temp` | number | CPU temperature Celsius, send `0` if unknown | | no |
+| `temp` | number | CPU temperature Celsius, send `0` if unknown | 0 shows N/A | yes |
 | `power` | number | system power draw watts, send `0` if unknown | | no |
 | `net_down` | number | download rate, **kilobytes per second** | shown as K/S, or M/S from 1,024 | yes |
 | `net_up` | number | upload rate, kilobytes per second | same | yes |
@@ -270,14 +276,14 @@ The board notifies the button characteristic with exactly 4 bytes:
 | 6 | this host is now hidden | switch to the slow update interval |
 | 7 | a button dismissed the ringing alert | stop sending `alert`; the page byte is the page under the box |
 
-Page numbers: 1 overview, 2 host system, 3 agent usage, 4 news, 5 todo,
-6 devices, 7 debug log. The overview carries the sound history, the host system page
+Page numbers: 1 overview, 2 CPU, 3 trends, 4 processes, 5 agent usage, 6 news,
+7 todo, 8 devices, 9 debug log. The overview carries the sound history, the host system page
 carries the top processes, and the debug log shows the board's own log lines.
 
 Rules the board enforces:
 
 - Button events go **only to the shown host**.
-- Holding KEY on any page except host system, news and the debug log switches
+- Holding KEY on any page except processes, news and the debug log switches
   the shown host. That switch is not sent as event 2. On those three pages KEY
   held reorders the process rows, pages through headlines, and pages through log
   lines respectively, and is sent as event 2.
@@ -367,7 +373,26 @@ the meaning, not necessarily the method.
   all non-loopback interfaces, subtract the previous snapshot's totals, divide
   by elapsed seconds and by 1,024. Send 0 for the first snapshot.
 - `battery` and `power`: laptop battery percent and watts on macOS. Send 0 on a
-  desktop PC. `gpu` and `temp`: send 0.
+  desktop PC.
+- `cores`: per logical processor percent over the same interval as `cpu`, from
+  `sysinfo` on every platform.
+- `gpu`, `gpu_temp`, `gpu_mem_used_mb`, `gpu_mem_total_mb`, `gpu_power_w`: from
+  `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits`,
+  which needs no privileges wherever the NVIDIA driver is installed. A field the
+  driver reports as `[N/A]` is sent as 0. Without the tool, all are 0.
+- `temp` and `fan_rpm`: from `sensors.json` beside `config.yaml`, written every
+  few seconds by `sensors.ps1`, which runs as a separate scheduled task with
+  the highest run level because the Lenovo `LENOVO_GAMEZONE_DATA` WMI class
+  refuses a normal user. The collector itself is never elevated: it runs shell
+  commands from `config.yaml`, which any process of the user can edit, so an
+  elevated collector would be a path to administrator. A file older than 60 s
+  counts as absent. Without the file, `temp` is 0 and `fan_rpm` is `[]`.
+  Only Lenovo GameZone machines are covered; `Win32_Fan` reports no speed and
+  `MSAcpi_ThermalZoneTemperature` is unsupported on the reference laptop.
+
+The board keeps its own history of `ram`, `net_down`, `net_up`, `gpu`, `temp`
+and `gpu_temp`: one point per snapshot, 60 points, reset when the shown source
+changes. The trends page draws them, so the span is `update_seconds` times 60.
 
 ### Alerts and todos, every snapshot
 - `todos` comes from config `todos`, in file order, with `due_min` computed

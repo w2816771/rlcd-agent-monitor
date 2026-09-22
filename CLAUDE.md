@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two halves of one product for the Waveshare ESP32-S3-RLCD-4.2 (400x300 reflective
 monochrome LCD):
 
-- `main/` + `components/rlcd/` — ESP-IDF 5.5.1 firmware (C++17) that renders seven
+- `main/` + `components/rlcd/` — ESP-IDF 5.5.1 firmware (C++17) that renders nine
   LVGL pages and advertises a NimBLE GATT peripheral named `RLCD Monitor`.
 - `host/` — a Rust collector for macOS and Windows that scrapes local
   system/agent stats plus weather and news, then pushes them to the board over
@@ -105,6 +105,14 @@ transcript records directly, since resumed sessions repeat them. Weather (Open-M
 
 `host/config.yaml` is re-read every loop iteration, so config changes take effect
 without a restart. Keep that property when adding settings.
+
+Hardware readings (`sensors.rs`): GPU from `nvidia-smi`, unprivileged; fan
+speeds and CPU temperature from `host/sensors.json`, written by `sensors.ps1`
+running as a separate elevated task. Never elevate the collector itself: it
+executes shell commands from a user-writable file. The board keeps trend history
+itself (`main/trends.cpp`, one point per snapshot, 60 points) so the snapshot
+does not grow; charts are `lv_chart` with `LV_CHART_POINT_NONE` for the points a
+young history does not have yet.
 
 All strings sent to the board must pass through `ascii()` with a length limit,
 since the display fonts have no glyphs for anything else.

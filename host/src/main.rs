@@ -28,6 +28,7 @@ use walkdir::WalkDir;
 
 mod alerts;
 mod limits;
+mod sensors;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
@@ -98,6 +99,15 @@ struct Snapshot {
     ram_used_gb: f32,
     ram_total_gb: f32,
     gpu: u8,
+    // Per logical processor, 0 to 100, in the order the system numbers them.
+    cores: Vec<u8>,
+    gpu_temp: f32,
+    gpu_mem_used_mb: u32,
+    gpu_mem_total_mb: u32,
+    gpu_power_w: f32,
+    // One entry per fan; null where the firmware gave no reading, which the
+    // board shows as N/A rather than as a stopped fan.
+    fan_rpm: Vec<Option<u32>>,
     swap: u8,
     swap_used_gb: f32,
     temp: f32,
@@ -548,6 +558,9 @@ fn collect_snapshot(
     alert: Option<ActiveAlert>,
 ) -> Snapshot {
     let (processes, process_count, cpu, codex_active, claude_active) = process_usage();
+    let cores = portable::core_usage();
+    let gpu = gpu_reading().unwrap_or_default();
+    let board = sensors::read_sensors(&sensors_path()).unwrap_or_default();
     let (ram, ram_used_gb, ram_total_gb) = memory_usage();
     let (swap, swap_used_gb) = swap_usage();
     let (net_down, net_up) = net.rate_kb_per_second();
@@ -564,10 +577,18 @@ fn collect_snapshot(
         ram,
         ram_used_gb,
         ram_total_gb,
-        gpu: 0,
+        gpu: gpu.utilization_percent,
+        cores,
+        // The driver reads its own sensor without privileges; the elevated
+        // task is the fallback for a machine whose driver reports none.
+        gpu_temp: gpu.temperature_c.or(board.gpu_temp_c).unwrap_or(0.0),
+        gpu_mem_used_mb: gpu.memory_used_mb,
+        gpu_mem_total_mb: gpu.memory_total_mb,
+        gpu_power_w: gpu.power_w.unwrap_or(0.0),
+        fan_rpm: board.fan_rpm,
         swap,
         swap_used_gb,
-        temp: 0.0,
+        temp: board.cpu_temp_c.unwrap_or(0.0),
         power: battery_power_watts(),
         codex: codex_usage(codex_active),
         claude: claude_usage(claude_active),
@@ -708,6 +729,21 @@ fn interface_bytes() -> (u64, u64) {
         up += fields[fields.len() - 2].parse::<u64>().unwrap_or(0);
     }
     (down, up)
+}
+
+// nvidia-smi answers without privileges wherever the NVIDIA driver is
+// installed, and is absent everywhere else, which reads as no GPU.
+fn gpu_reading() -> Option<sensors::GpuReading> {
+    sensors::parse_nvidia_smi(&command_output("nvidia-smi", &sensors::NVIDIA_SMI_ARGS))
+}
+
+// Written by sensors.ps1 next to config.yaml; see that script for why it is a
+// separate, elevated task rather than part of this process.
+fn sensors_path() -> PathBuf {
+    env::var_os("RLCD_CONFIG")
+        .map(PathBuf::from)
+        .map(|config| config.with_file_name("sensors.json"))
+        .unwrap_or_else(|| PathBuf::from("sensors.json"))
 }
 
 fn command_output(program: &str, args: &[&str]) -> String {
@@ -1482,6 +1518,18 @@ mod portable {
             .collect();
         let cpu = system.global_cpu_usage().clamp(0.0, 100.0) as u8;
         summarize_processes(values, cpu)
+    }
+
+    // Per logical processor. The System is the one process_usage refreshes a
+    // moment earlier, so the figures describe the same interval as the total.
+    pub fn core_usage() -> Vec<u8> {
+        let mut system = system();
+        system.refresh_cpu_usage();
+        system
+            .cpus()
+            .iter()
+            .map(|cpu| cpu.cpu_usage().clamp(0.0, 100.0) as u8)
+            .collect()
     }
 
     pub fn memory_usage() -> (u8, f32, f32) {

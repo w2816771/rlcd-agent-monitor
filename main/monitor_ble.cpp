@@ -215,6 +215,35 @@ bool parse_snapshot(const char *json, int slot) {
     copy_float(root, "swap_used_gb", next.swap_used_gb);
     copy_float(root, "temp", next.cpu_temp_c);
     copy_float(root, "power", next.system_power_w);
+    copy_float(root, "gpu_temp", next.gpu_temp_c);
+    copy_float(root, "gpu_power_w", next.gpu_power_w);
+    cJSON *gpu_used = cJSON_GetObjectItemCaseSensitive(root, "gpu_mem_used_mb");
+    if (cJSON_IsNumber(gpu_used)) next.gpu_mem_used_mb = std::clamp(gpu_used->valueint, 0, 65535);
+    cJSON *gpu_total = cJSON_GetObjectItemCaseSensitive(root, "gpu_mem_total_mb");
+    if (cJSON_IsNumber(gpu_total)) next.gpu_mem_total_mb = std::clamp(gpu_total->valueint, 0, 65535);
+    cJSON *cores = cJSON_GetObjectItemCaseSensitive(root, "cores");
+    if (cJSON_IsArray(cores)) {
+        next.core_count = 0;
+        for (size_t i = 0; i < next.cores.size(); ++i) {
+            cJSON *item = cJSON_GetArrayItem(cores, i);
+            if (!cJSON_IsNumber(item)) break;
+            next.cores[i] = static_cast<uint8_t>(std::clamp(item->valueint, 0, 100));
+            next.core_count = i + 1;
+        }
+    }
+    // A fan is listed even without a value: null keeps its place so FAN2 is
+    // still called FAN2, and is shown as N/A.
+    cJSON *fans = cJSON_GetObjectItemCaseSensitive(root, "fan_rpm");
+    if (cJSON_IsArray(fans)) {
+        next.fan_count = 0;
+        for (size_t i = 0; i < next.fan_rpm.size(); ++i) {
+            cJSON *item = cJSON_GetArrayItem(fans, i);
+            if (!item) break;
+            next.fan_known[i] = cJSON_IsNumber(item);
+            next.fan_rpm[i] = next.fan_known[i] ? std::clamp(item->valueint, 0, 65535) : 0;
+            next.fan_count = i + 1;
+        }
+    }
     copy_float(root, "net_down", next.net_down_kbs);
     copy_float(root, "net_up", next.net_up_kbs);
     copy_float(root, "noise_offset", next.noise_offset_db);

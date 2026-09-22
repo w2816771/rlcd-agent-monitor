@@ -12,3 +12,4 @@ host/config.yaml
 host/*.yaml.bak
 host/*.yaml.tmp
 host/settings.url
+host/sensors.json

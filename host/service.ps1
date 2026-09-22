@@ -1,7 +1,7 @@
 # Starts the RLCD collector at logon on Windows, the counterpart of service.sh.
 # Build first with: cargo build --release
 param(
-    [ValidateSet("install", "uninstall", "restart", "status", "logs")]
+    [ValidateSet("install", "uninstall", "restart", "status", "logs", "install-sensors", "uninstall-sensors")]
     [string]$Action = "status"
 )
 $ErrorActionPreference = "Stop"
@@ -10,6 +10,13 @@ $exe = Join-Path $PSScriptRoot "target\release\rlcd-host.exe"
 $log = Join-Path $PSScriptRoot "rlcd-host.log"
 $config = Join-Path $PSScriptRoot "config.yaml"
 $template = Join-Path $PSScriptRoot "config.example.yaml"
+# Fan speeds and temperatures come from a separate task that runs elevated,
+# because the Lenovo WMI class refuses a normal user. See sensors.ps1 for why
+# the collector itself is never elevated.
+$sensorTask = "RLCD Sensors"
+$sensorScript = Join-Path $PSScriptRoot "sensors.ps1"
+$sensorFile = Join-Path $PSScriptRoot "sensors.json"
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 switch ($Action) {
     "install" {
@@ -56,6 +63,37 @@ switch ($Action) {
         $running = Get-Process rlcd-host -ErrorAction SilentlyContinue
         if ($running) { "Collector running, pid $($running.Id)." }
         else { "Collector is not running." }
+        if (Get-ScheduledTask -TaskName $sensorTask -ErrorAction SilentlyContinue) {
+            if (Test-Path $sensorFile) {
+                $age = [int]((Get-Date) - (Get-Item $sensorFile).LastWriteTime).TotalSeconds
+                "Sensor task installed; sensors.json written $age s ago: " + (Get-Content $sensorFile -Raw)
+            } else { "Sensor task installed but sensors.json has not been written yet." }
+        } else { "Sensor task not installed; fan speeds and CPU temperature read N/A. Run install-sensors from an administrator PowerShell." }
+    }
+    "install-sensors" {
+        # Registering a task with the highest run level needs an elevated shell;
+        # a normal one gets Access denied from the scheduler, not from us.
+        if (-not $elevated) { throw "install-sensors must run from an administrator PowerShell (right click, Run as administrator)." }
+        $run = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sensorScript`"" `
+            -WorkingDirectory $PSScriptRoot
+        $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $heartbeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)
+        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $sensorTask -Action $run -Trigger $logon, $heartbeat -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $sensorTask
+        Start-Sleep -Seconds 4
+        if (Test-Path $sensorFile) { "Sensor task installed. First reading: " + (Get-Content $sensorFile -Raw) }
+        else { "Sensor task installed and started; sensors.json should appear within a few seconds." }
+    }
+    "uninstall-sensors" {
+        if (-not $elevated) { throw "uninstall-sensors must run from an administrator PowerShell." }
+        Stop-ScheduledTask -TaskName $sensorTask -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $sensorTask -Confirm:$false
+        Remove-Item $sensorFile -ErrorAction SilentlyContinue
+        "Sensor task removed."
     }
     "logs" {
         if (Test-Path $log) { Get-Content $log -Tail 40 -Wait }

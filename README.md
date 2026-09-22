@@ -26,11 +26,14 @@ nothing to sign up for.
 
 ## Pages
 
-Seven, cycled with the buttons: overview (clock, weather, room temperature,
-humidity, sound history), host system (CPU, RAM, network, top processes), agent
-usage (Codex and Claude tokens), news, todo (from the config file, with time
-left on anything that has a deadline), devices, and a debug log showing the
-board log lines.
+Nine, cycled with the buttons: overview (clock, weather, room temperature,
+humidity, sound history), CPU (a bar per logical processor, the total, CPU and
+GPU temperatures, GPU load, memory and power, fan speeds), trends (RAM, network,
+GPU and temperature curves over the last 60 snapshots), top processes (ordered
+by CPU, RAM or a disk-weighted impact score; KEY held cycles), agent usage
+(Codex and Claude limits and tokens), news, todo (from the config file, with
+time left on anything that has a deadline), devices, and a debug log showing
+the board log lines.
 
 Reminders come from the same config file: a time of day, a repeating interval,
 or a countdown. When one is due the board draws a box over whatever page is up
@@ -39,7 +42,7 @@ any button is pressed. That press only silences it; it never turns a page.
 
 | Button | Press | Hold |
 |---|---|---|
-| KEY | next page | switch source; on host system reorders the processes, on news and debug pages through them |
+| KEY | next page | switch source; on processes reorders the rows, on news and debug pages through them |
 | BOOT | previous page | back to the overview |
 | PWR | power on | power off |
 
@@ -104,6 +107,24 @@ file as `config.yaml.bak` and atomically replaces it. Existing unknown keys are
 retained; YAML comments/formatting are kept in the backup. The collector applies
 changes on its next collection cycle. The release executable runs without a
 console, writes its own log and is launched directly by the scheduled task.
+
+### Fan speeds and CPU temperature on Windows
+
+GPU figures come from `nvidia-smi` and need nothing. Fan speeds and the CPU
+temperature come from the Lenovo GameZone WMI interface, which refuses a normal
+user, so a small read-only script runs as its own elevated scheduled task and
+leaves the readings in `host\sensors.json`. The collector stays unelevated on
+purpose: it runs the button commands from `config.yaml`, which any process of
+your user can edit. From an **administrator** PowerShell, in `host\`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\service.ps1 install-sensors
+```
+
+`status` reports the sensor file and its age; `uninstall-sensors` removes the
+task. Without it the board shows FAN N/A and TEMP N/A, never 0. Only Lenovo
+laptops with the GameZone interface are covered; on anything else the script
+writes nulls and the board shows N/A.
 
 ### Claude limit figures
 

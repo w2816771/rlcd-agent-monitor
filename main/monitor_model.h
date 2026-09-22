@@ -45,6 +45,8 @@ struct TodoItem {
     int32_t due_min = 0;  // Negative once overdue.
 };
 constexpr std::size_t kMaxTodos = 8;
+constexpr std::size_t kMaxCores = 32;
+constexpr std::size_t kMaxFans = 4;
 // An alert older than this when it arrives is ignored: it is a host that kept
 // sending one the board already dismissed before a reboot.
 constexpr uint32_t kAlertMaxAgeSeconds = 1800;
@@ -108,6 +110,19 @@ struct MonitorModel {
     uint16_t alert_id = 0;  // 0 means nothing is ringing.
     std::string alert_title;
     uint32_t alert_age_s = 0;
+    // Per logical processor, and the GPU and fan readings a host with the
+    // sensors can supply. Zero temperatures and an empty fan list mean the host
+    // had nothing, which the pages show as N/A rather than as a cold, still
+    // machine.
+    std::array<uint8_t, kMaxCores> cores{};
+    std::size_t core_count = 0;
+    float gpu_temp_c = 0.0f;
+    uint16_t gpu_mem_used_mb = 0;
+    uint16_t gpu_mem_total_mb = 0;
+    float gpu_power_w = 0.0f;
+    std::array<int32_t, kMaxFans> fan_rpm{};
+    std::array<bool, kMaxFans> fan_known{};
+    std::size_t fan_count = 0;
 };
 
 MonitorModel monitor_demo_model();
