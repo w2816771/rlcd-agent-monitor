@@ -21,11 +21,8 @@ switch ($Action) {
             "Created $config from the template. Edit it for your location."
         }
         # The collector reads config.yaml from its working directory.
-        # Run through cmd so the output lands in a file. A logon task has no
-        # console, so without this there is no telling a working collector
-        # from a crashed one, which the macOS service already avoids.
-        $run = New-ScheduledTaskAction -Execute "cmd.exe" `
-            -Argument "/c `"`"$exe`" >> `"$log`" 2>&1`"" `
+        # The Windows GUI executable writes its own log without a console.
+        $run = New-ScheduledTaskAction -Execute $exe `
             -WorkingDirectory $PSScriptRoot
         $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
         # A second trigger that fires every minute forever. The restart on

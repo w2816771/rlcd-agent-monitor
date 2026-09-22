@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
+httparse = "1"
 btleplug = "0.11"
 chrono = "0.4"
 futures = "0.3"
@@ -21,4 +22,4 @@ walkdir = "2"
 
 [target."cfg(windows)".dependencies]
 tray-icon = "0.25.0"
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Console", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }

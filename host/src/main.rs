@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 use std::io::IsTerminal;
 use std::{
     env, fs,
@@ -28,6 +30,8 @@ mod alerts;
 mod limits;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod web;
 
 use alerts::{ActiveAlert, AlertConfig, Scheduler, TodoConfig, TodoItem};
 
@@ -122,7 +126,7 @@ struct OnlineData {
     headline_ages: Vec<String>,
 }
 
-#[derive(Clone, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 struct Config {
     update_seconds: u64,
@@ -158,7 +162,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 struct WeatherConfig {
     latitude: f64,
@@ -177,7 +181,7 @@ impl Default for WeatherConfig {
 }
 
 // Shell commands run when the board reports a button. Empty means ignore.
-#[derive(Clone, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 struct ButtonConfig {
     key: String,
@@ -198,7 +202,7 @@ impl ButtonConfig {
     }
 }
 
-#[derive(Clone, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 struct NewsConfig {
     topic: String,
@@ -238,6 +242,8 @@ fn load_config() -> Config {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(windows)]
+    init_log()?;
     println!("RLCD host monitor starting");
     // Its own thread: the tray needs a Windows message loop, which cannot share
     // one with the async runtime.
@@ -253,8 +259,13 @@ async fn main() -> Result<()> {
             .map(|path| if path.is_absolute() { path } else { here.join(path) })
             .unwrap_or(here);
         let log = root.join("rlcd-host.log");
-        let config = root.join("config.yaml");
-        std::thread::spawn(move || tray::run(log, config));
+        let config = env::var_os("RLCD_CONFIG").map(PathBuf::from)
+            .unwrap_or_else(|| root.join("config.yaml"));
+        let settings_url = match web::start(config.clone()) {
+            Ok(url) => Some(url),
+            Err(error) => { eprintln!("Settings page unavailable: {error:#}"); None }
+        };
+        std::thread::spawn(move || tray::run(log, config, settings_url));
     }
     let adapter = bluetooth_adapter().await?;
     let characteristic_uuid = Uuid::parse_str(TELEMETRY_UUID)?;
@@ -700,7 +711,13 @@ fn interface_bytes() -> (u64, u64) {
 }
 
 fn command_output(program: &str, args: &[&str]) -> String {
-    Command::new(program)
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command
         .args(args)
         .output()
         .ok()
@@ -1325,8 +1342,38 @@ fn source_name(config: &Config) -> String {
 fn shell_command() -> Command {
     let (program, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
     let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     command.arg(flag);
     command
+}
+
+#[cfg(windows)]
+fn init_log() -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+
+    // Keep the handle alive for Rust's stdout/stderr and the tray thread.
+    static LOG: OnceLock<fs::File> = OnceLock::new();
+    let config = env::var_os("RLCD_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("config.yaml"));
+    let path = config.with_file_name("rlcd-host.log");
+    let file = fs::OpenOptions::new().create(true).append(true).open(&path)
+        .with_context(|| format!("Cannot open {}", path.display()))?;
+    let file = LOG.get_or_init(|| file);
+    // SAFETY: LOG owns a valid file handle until process exit.
+    unsafe {
+        if SetStdHandle(STD_OUTPUT_HANDLE, file.as_raw_handle()) == 0
+            || SetStdHandle(STD_ERROR_HANDLE, file.as_raw_handle()) == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1491,6 +1538,21 @@ fn home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn background_commands_have_no_console() {
+        use std::os::windows::process::CommandExt;
+        // The test runner has a console; children must not inherit/create one.
+        let script = "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow();' -Name ConsoleProbe -Namespace Rlcd; [Rlcd.ConsoleProbe]::GetConsoleWindow().ToInt64()";
+        assert_eq!(command_output("powershell.exe", &["-NoProfile", "-Command", script]).trim(), "0");
+        let path = env::temp_dir().join(format!("rlcd-console-probe-{}.ps1", std::process::id()));
+        fs::write(&path, script).unwrap();
+        let output = shell_command().raw_arg(format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"", path.display())).output().unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    }
 
     #[test]
     fn ascii_removes_unsupported_glyphs_and_limits_length() {

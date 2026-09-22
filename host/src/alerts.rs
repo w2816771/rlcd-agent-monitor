@@ -9,7 +9,7 @@ use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Wee
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Clone, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AlertConfig {
     pub title: String,
@@ -27,7 +27,7 @@ pub struct AlertConfig {
     pub from: String,
 }
 
-#[derive(Clone, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct TodoConfig {
     pub text: String,

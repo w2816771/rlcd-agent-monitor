@@ -34,6 +34,10 @@ pub fn set_status(text: impl Into<String>) {
     }
 }
 
+pub fn status() -> String {
+    status_cell().lock().map(|s| s.clone()).unwrap_or_else(|_| "Unavailable".into())
+}
+
 /// True once the tray menu has asked the collector to stop.
 pub fn quit_requested() -> bool {
     QUIT.load(Ordering::Relaxed)
@@ -82,7 +86,8 @@ fn open_folder(path: &PathBuf) {
 
 /// Runs the icon and its message loop until the menu asks to quit. Blocks, so
 /// call it on a thread of its own.
-pub fn run(log: PathBuf, config: PathBuf) {
+pub fn run(log: PathBuf, config: PathBuf, settings_url: Option<String>) {
+    let settings = MenuItem::new("打开设置", settings_url.is_some(), None);
     let open_log = MenuItem::new("Open log", true, None);
     let open_config = MenuItem::new("Edit config", true, None);
     let folder_item = MenuItem::new("Open folder", true, None);
@@ -90,7 +95,7 @@ pub fn run(log: PathBuf, config: PathBuf) {
     let menu = Menu::new();
     let separator = PredefinedMenuItem::separator();
     if menu
-        .append_items(&[&open_log, &open_config, &folder_item, &separator, &quit])
+        .append_items(&[&settings, &open_log, &open_config, &folder_item, &separator, &quit])
         .is_err()
     {
         return;
@@ -127,7 +132,13 @@ pub fn run(log: PathBuf, config: PathBuf) {
             }
         }
         while let Ok(event) = menu_events.try_recv() {
-            if event.id == open_log.id() {
+            if event.id == settings.id() {
+                if let Some(url) = &settings_url {
+                    if let Err(error) = Command::new("explorer.exe").arg(url).spawn() {
+                        eprintln!("Could not open settings: {error}");
+                    }
+                }
+            } else if event.id == open_log.id() {
                 open_text(&log);
             } else if event.id == open_config.id() {
                 open_text(&config);

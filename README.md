@@ -93,6 +93,18 @@ in the hidden overflow, so drag it onto the taskbar if you want it visible. Its
 tooltip shows the last successful send, and its menu opens the log, the config
 and the folder, or stops the collector.
 
+The Windows tray also has **打开设置** for the embedded Chinese settings page.
+It edits refresh intervals, weather/news, reminders, todos and button commands.
+The host serves it on `127.0.0.1:17832` (an available port is chosen if busy);
+there is no Node service or separate HTML file to install. Open it from the tray
+or the generated `host/settings.url` shortcut, which carries a per-run access
+token. After restarting the host, reopen the page through either entry point.
+Saving validates the configuration, rejects stale edits, backs up the previous
+file as `config.yaml.bak` and atomically replaces it. Existing unknown keys are
+retained; YAML comments/formatting are kept in the backup. The collector applies
+changes on its next collection cycle. The release executable runs without a
+console, writes its own log and is launched directly by the scheduled task.
+
 ### Claude limit figures
 
 The board shows Claude's 5 hour and 7 day limits as percentages, the same ones

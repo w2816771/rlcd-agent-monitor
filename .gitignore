@@ -9,3 +9,6 @@ host/*.out
 host/*.err
 host/*.log
 host/config.yaml
+host/*.yaml.bak
+host/*.yaml.tmp
+host/settings.url
