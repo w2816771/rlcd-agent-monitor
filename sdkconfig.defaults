@@ -38,3 +38,14 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # (12 process rows, 8 todo rows, 3 sources). The 3584 byte default overflowed
 # the moment the todo rows were added.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# LVGL allocates from the C library heap, which on this board includes the
+# 8 MB of PSRAM, rather than from its own 64 KB pool. Nine pages of objects
+# and six charts do not fit in 64 KB, and when the pool ran out the failure
+# was silent: LVGL asserts on a failed glyph buffer allocation and its default
+# assert handler is while(1), which parked the render thread with the task
+# watchdog firing every five seconds and nothing on the console to say why.
+CONFIG_LV_USE_BUILTIN_MALLOC=n
+CONFIG_LV_USE_CLIB_MALLOC=y
+# The header abort() needs, for the assert handler set in CMakeLists.txt.
+CONFIG_LV_ASSERT_HANDLER_INCLUDE="stdlib.h"

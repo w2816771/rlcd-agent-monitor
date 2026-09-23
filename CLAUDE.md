@@ -171,6 +171,24 @@ The panic text does not reach the USB console. Read a crash with
 boot loop with "Starting" once a second and no panic on the console was a
 stack overflow in the main task, found that way.
 
+## LVGL memory and a silent hang
+
+LVGL allocates from the C library heap (`CONFIG_LV_USE_CLIB_MALLOC`), which on
+this board includes the 8 MB of PSRAM. It used to run on its own 64 KB pool,
+and nine pages of objects plus six charts did not fit. The failure was silent:
+LVGL asserts on a glyph buffer allocation that returns NULL, and its default
+assert handler is `while(1)`, so the render thread parked for good with the
+task watchdog firing every five seconds and nothing on the console to say
+why. Four backtraces sampled at the same instruction in `lv_draw_label.c` was
+the tell. The assert handler is now `abort()`, set from the root
+`CMakeLists.txt` because the Kconfig offers only the header to include, so a
+repeat becomes a core dump and a reboot rather than a hang. The semicolon in
+that definition is escaped: an unescaped one is a CMake list separator.
+
+The USB console can go quiet after a flash while BLE keeps working; only a
+power cycle has brought it back. Evidence from before it goes quiet is still
+evidence.
+
 ## Two display optimisations that did not survive contact
 
 Both are still in `components/rlcd/display_bsp.cpp`, and neither is called.
