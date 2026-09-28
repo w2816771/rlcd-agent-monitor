@@ -261,14 +261,6 @@ extern "C" void app_main() {
     debug_log_init();
     ESP_LOGI("agent-monitor", "Starting 400x300 RLCD agent monitor");
 
-    // Automatic light sleep is not implied by dynamic frequency scaling; it has
-    // to be requested here and needs tickless idle in sdkconfig to take effect.
-    esp_pm_config_t power{};
-    power.max_freq_mhz = 80;
-    power.min_freq_mhz = 40;
-    power.light_sleep_enable = true;
-    ESP_ERROR_CHECK(esp_pm_configure(&power));
-
     display.RLCD_Init();
     lv_init();
     lv_tick_set_cb(tick_ms);
@@ -307,4 +299,18 @@ extern "C" void app_main() {
     monitor_ble_init();
     xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, nullptr, 5, nullptr, 1);
     xTaskCreatePinnedToCore(button_task, "button", 3072, nullptr, 4, nullptr, 0);
+
+    // Automatic light sleep is not implied by dynamic frequency scaling; it has
+    // to be requested here and needs tickless idle in sdkconfig to take effect.
+    // It is requested last, and late: with no USB host attached at power-up
+    // nothing holds sleep off, and a board that slept through the panel reset
+    // sequence came up with a blank screen. Sleep also powers down the USB
+    // Serial/JTAG PHY, so a host plugged in before power-up needs these seconds
+    // to enumerate; once it has, the connection itself keeps sleep off.
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    esp_pm_config_t power{};
+    power.max_freq_mhz = 80;
+    power.min_freq_mhz = 40;
+    power.light_sleep_enable = true;
+    ESP_ERROR_CHECK(esp_pm_configure(&power));
 }

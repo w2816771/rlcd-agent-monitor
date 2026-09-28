@@ -184,6 +184,23 @@ never turns on again from the key, on USB or on battery: only removing the
 USB cable as the switch, or bridge Q1 source to drain if the battery is needed.
 Do not look for this in the firmware.
 
+## Light sleep is enabled last, ten seconds after boot
+
+`esp_pm_configure` with light sleep used to run first thing in `app_main`.
+That was harmless while a USB host was attached at power-up, because the
+Serial/JTAG connection holds sleep off; with no host the board slept through
+the panel reset sequence and came up blank, and since sleep also powers down
+the Serial/JTAG PHY, a host plugged in afterwards never enumerated, so the
+board could not even be flashed without the BOOT strap. Sleep is now requested
+at the end of `app_main` after a ten second delay: the panel, LVGL and USB
+enumeration all finish before it can bite, and an enumerated host then holds
+it off as before. A host plugged in later than that is still not detected.
+
+To flash a board whose port is missing: unplug USB, wait a minute so the
+power controller's own supply drains, hold BOOT, plug into the computer, keep
+BOOT held five seconds, release. `flash-when-ready.ps1` waits for the new COM
+port and flashes `build/` as soon as it appears.
+
 ## LVGL memory and a silent hang
 
 LVGL allocates from the C library heap (`CONFIG_LV_USE_CLIB_MALLOC`), which on
