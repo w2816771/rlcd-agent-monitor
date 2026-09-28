@@ -171,6 +171,19 @@ The panic text does not reach the USB console. Read a crash with
 boot loop with "Starting" once a second and no panic on the console was a
 stack overflow in the main task, found that way.
 
+## The PWR button is hardware only
+
+The PWR key goes to a one-key power controller (U3, ECJ23001 on the schematic)
+whose output gates a P-MOSFET (Q1, AO3401) between VDD and VSYS. Everything,
+including the ESP32, sits behind Q1, and no ESP32 pin reaches U3. So the
+firmware can neither power the board on, hold it on, nor turn it off; power on
+when plugged in is not a firmware setting. On the reference board U3 turns on
+by itself when VDD rises from zero, but once it has been long-pressed off it
+never turns on again from the key, on USB or on battery: only removing the
+18650 and replugging USB restores it. Run it without the battery and use the
+USB cable as the switch, or bridge Q1 source to drain if the battery is needed.
+Do not look for this in the firmware.
+
 ## LVGL memory and a silent hang
 
 LVGL allocates from the C library heap (`CONFIG_LV_USE_CLIB_MALLOC`), which on
