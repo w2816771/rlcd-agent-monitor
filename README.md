@@ -10,6 +10,14 @@ Reflective means no backlight: it is readable in daylight, holds its image
 without power, and is meant to sit on a desk being glanced at rather than
 watched.
 
+## screeen show
+images
+| -- | -- | -- | 
+| <img width="1820" height="1024" alt="4de7fb9c1ca17feba97a3f199c803d5e" src="https://github.com/user-attachments/assets/37cb31f2-be0c-47be-8c3c-d45b1c0a6cbe" /> | <img width="1820" height="1024" alt="72bbcefc37fe6ccd47c803228208861a" src="https://github.com/user-attachments/assets/e2fd73f0-f8dc-4599-b5b3-53a8d6ef8741" /> | <img width="1820" height="1024" alt="a294a077d4e365e8803d802f3c13e441" src="https://github.com/user-attachments/assets/ecdf21da-7f56-4289-b719-dd3a4bbc5175" /> | 
+
+
+
+
 ## What you need
 
 | | |
